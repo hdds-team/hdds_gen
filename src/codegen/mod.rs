@@ -5,6 +5,9 @@
 //!
 //! Generates code from IDL AST to various target languages.
 
+/// Language keyword escaping for generated identifiers.
+pub mod keywords;
+
 /// C code generator.
 pub mod c;
 pub use c::CStandard;

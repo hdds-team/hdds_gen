@@ -120,7 +120,7 @@ impl RustGenerator {
     /// Encode an `@optional` field in standard CDR2: 1-byte presence flag + value.
     fn emit_optional_field_encode(field: &Field) -> String {
         let mut code = String::new();
-        let fname = &field.name;
+        let fname = super::super::keywords::rust_ident(&field.name);
         let alignment = Self::cdr2_alignment(&field.field_type);
 
         // Boolean presence flag (1 byte)
@@ -261,12 +261,10 @@ impl RustGenerator {
             code.push_str("        offset += 4;\n");
 
             // Payload: reuse primitive encoder without extra alignment.
+            let ident = super::super::keywords::rust_ident(&field.name);
             if let IdlType::Primitive(p) = &field.field_type {
                 code.push_str(&Self::encode_primitive_compact(
-                    p,
-                    &field.name,
-                    false,
-                    "        ",
+                    p, &ident, false, "        ",
                 ));
             }
         }
@@ -318,14 +316,12 @@ impl RustGenerator {
             }
             let alignment = Self::cdr2_alignment(&field.field_type);
             let member_id = Self::compute_member_id(s, idx, field);
+            let ident = super::super::keywords::rust_ident(&field.name);
 
             if field.is_optional() {
                 push_fmt(
                     &mut code,
-                    format_args!(
-                        "        if let Some(value) = &self.{fname} {{\n",
-                        fname = field.name
-                    ),
+                    format_args!("        if let Some(value) = &self.{ident} {{\n"),
                 );
             }
 
@@ -383,14 +379,14 @@ impl RustGenerator {
                     if matches!(lc, 5u32) {
                         code.push_str(&Self::encode_primitive_inline(
                             p,
-                            &field.name,
+                            &ident,
                             field.is_optional(),
                             "        ",
                         ));
                     } else {
                         code.push_str(&Self::encode_primitive_compact(
                             p,
-                            &field.name,
+                            &ident,
                             field.is_optional(),
                             "        ",
                         ));
@@ -416,7 +412,7 @@ impl RustGenerator {
                                 &mut code,
                                 format_args!(
                                     "        let count_u32 = u32::try_from(self.{fname}.len()).map_err(|_| CdrError::InvalidEncoding)?;\n",
-                                    fname = field.name
+                                    fname = ident
                                 ),
                             );
                             Self::encode_buffer_check(&mut code, "        ", "4");
@@ -426,7 +422,7 @@ impl RustGenerator {
                                 &mut code,
                                 format_args!(
                                     "        for elem in &self.{fname} {{\n",
-                                    fname = field.name
+                                    fname = ident
                                 ),
                             );
                             Self::encode_buffer_check(&mut code, "            ", "4");
@@ -445,7 +441,7 @@ impl RustGenerator {
                             let value_expr = if field.is_optional() {
                                 "value".to_string()
                             } else {
-                                format!("self.{}", field.name)
+                                format!("self.{}", ident)
                             };
                             push_fmt(
                                 &mut code,
@@ -460,7 +456,7 @@ impl RustGenerator {
                         let value_expr = if field.is_optional() {
                             "value".to_string()
                         } else {
-                            format!("self.{}", field.name)
+                            format!("self.{}", ident)
                         };
                         push_fmt(
                             &mut code,
@@ -488,7 +484,7 @@ impl RustGenerator {
                     let value_expr = if field.is_optional() {
                         "value".to_string()
                     } else {
-                        format!("self.{}", field.name)
+                        format!("self.{}", ident)
                     };
                     push_fmt(
                         &mut code,
@@ -530,6 +526,7 @@ impl RustGenerator {
             if field.is_non_serialized() {
                 continue;
             }
+            let ident = super::super::keywords::rust_ident(&field.name);
             let alignment = Self::cdr2_alignment(&field.field_type);
             let pad = alignment.saturating_sub(1);
             let add = match &field.field_type {
@@ -545,7 +542,7 @@ impl RustGenerator {
                     &mut code,
                     format_args!(
                         "        if let Some(_value) = &self.{fname} {{ size += 4 + {pad} + {add}; }}\n",
-                        fname = field.name,
+                        fname = ident,
                         pad = pad,
                         add = add
                     ),
@@ -565,26 +562,27 @@ impl RustGenerator {
     }
 
     fn append_encode_field(dst: &mut String, field: &Field) {
+        let fname = super::super::keywords::rust_ident(&field.name);
         match &field.field_type {
-            IdlType::Primitive(p) => Self::append_encode_primitive(dst, &field.name, p),
+            IdlType::Primitive(p) => Self::append_encode_primitive(dst, &fname, p),
             IdlType::Sequence { inner, .. } => {
                 // Bounded string (string<N>) is represented as Sequence<Char>
                 if matches!(
                     **inner,
                     IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
                 ) {
-                    Self::append_encode_primitive(dst, &field.name, &PrimitiveType::String);
+                    Self::append_encode_primitive(dst, &fname, &PrimitiveType::String);
                 } else {
-                    Self::append_encode_sequence(dst, &field.name, inner);
+                    Self::append_encode_sequence(dst, &fname, inner);
                 }
             }
             IdlType::Array { inner, size } => {
-                Self::append_encode_array(dst, &field.name, inner, *size);
+                Self::append_encode_array(dst, &fname, inner, *size);
             }
             IdlType::Map { key, value, .. } => {
-                Self::append_encode_map(dst, &field.name, key, value);
+                Self::append_encode_map(dst, &fname, key, value);
             }
-            IdlType::Named(name) => Self::append_encode_named(dst, &field.name, name),
+            IdlType::Named(name) => Self::append_encode_named(dst, &fname, name),
         }
     }
 

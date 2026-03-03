@@ -66,7 +66,7 @@ impl RustGenerator {
         // Construct struct and return with consumed bytes
         code.push_str("        Ok((Self {\n");
         for field in &s.fields {
-            let fname = &field.name;
+            let fname = super::super::keywords::rust_ident(&field.name);
             if field.is_non_serialized() {
                 push_fmt(
                     &mut code,
@@ -101,7 +101,7 @@ impl RustGenerator {
     #[allow(clippy::too_many_lines)]
     fn emit_optional_field_decode(field: &Field) -> String {
         let mut code = String::new();
-        let fname = &field.name;
+        let fname = super::super::keywords::rust_ident(&field.name);
         let field_ty = Self::type_to_rust(&field.field_type);
         let alignment = Self::cdr2_alignment(&field.field_type);
 
@@ -237,10 +237,11 @@ impl RustGenerator {
             if field.is_non_serialized() {
                 continue;
             }
+            let ident = super::super::keywords::rust_ident(&field.name);
             let field_ty = Self::type_to_rust(&field.field_type);
             push_fmt(
                 &mut code,
-                format_args!("        let {fname}: {field_ty};\n", fname = field.name),
+                format_args!("        let {fname}: {field_ty};\n", fname = ident),
             );
         }
         code.push('\n');
@@ -249,6 +250,7 @@ impl RustGenerator {
             if field.is_non_serialized() {
                 continue;
             }
+            let ident = super::super::keywords::rust_ident(&field.name);
             let member_id = Self::compute_member_id(s, idx, field);
             code.push_str(
                 "        if src.len() < offset + 4 { return Err(CdrError::UnexpectedEof); }\n",
@@ -267,13 +269,13 @@ impl RustGenerator {
 
             if let IdlType::Primitive(p) = &field.field_type {
                 // Reuse primitive decoder without DHEADER/PL framing.
-                Self::append_decode_primitive(&mut code, &field.name, p);
+                Self::append_decode_primitive(&mut code, &ident, p);
             }
         }
 
         code.push_str("        Ok((Self {\n");
         for field in &s.fields {
-            let fname = &field.name;
+            let fname = super::super::keywords::rust_ident(&field.name);
             if field.is_non_serialized() {
                 push_fmt(
                     &mut code,
@@ -318,12 +320,13 @@ impl RustGenerator {
             if field.is_non_serialized() {
                 continue;
             }
+            let ident = super::super::keywords::rust_ident(&field.name);
             let field_ty = Self::type_to_rust(&field.field_type);
             push_fmt(
                 &mut code,
                 format_args!(
                     "        let mut {fname}_value: Option<{field_ty}> = None;\n",
-                    fname = field.name,
+                    fname = ident,
                     field_ty = field_ty
                 ),
             );
@@ -349,6 +352,7 @@ impl RustGenerator {
             if field.is_non_serialized() {
                 continue;
             }
+            let ident = super::super::keywords::rust_ident(&field.name);
             let member_id = Self::compute_member_id(s, idx, field);
             let alignment = Self::cdr2_alignment(&field.field_type);
 
@@ -506,7 +510,7 @@ impl RustGenerator {
                 &mut code,
                 format_args!(
                     "                    {fname}_value = Some(value_decoded);\n",
-                    fname = field.name
+                    fname = ident
                 ),
             );
             code.push_str("                }\n");
@@ -523,7 +527,7 @@ impl RustGenerator {
 
         code.push_str("        Ok((Self {\n");
         for field in &s.fields {
-            let fname = &field.name;
+            let fname = super::super::keywords::rust_ident(&field.name);
             let ext = field.is_external();
             if field.is_non_serialized() {
                 push_fmt(
@@ -564,26 +568,27 @@ impl RustGenerator {
     }
 
     fn append_decode_field(dst: &mut String, field: &Field) {
+        let ident = super::super::keywords::rust_ident(&field.name);
         match &field.field_type {
-            IdlType::Primitive(p) => Self::append_decode_primitive(dst, &field.name, p),
+            IdlType::Primitive(p) => Self::append_decode_primitive(dst, &ident, p),
             IdlType::Sequence { inner, .. } => {
                 // Bounded string (string<N>) is represented as Sequence<Char>
                 if matches!(
                     **inner,
                     IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
                 ) {
-                    Self::append_decode_primitive(dst, &field.name, &PrimitiveType::String);
+                    Self::append_decode_primitive(dst, &ident, &PrimitiveType::String);
                 } else {
-                    Self::append_decode_sequence(dst, &field.name, inner);
+                    Self::append_decode_sequence(dst, &ident, inner);
                 }
             }
             IdlType::Array { inner, size } => {
-                Self::append_decode_array(dst, &field.name, inner, *size);
+                Self::append_decode_array(dst, &ident, inner, *size);
             }
             IdlType::Map { key, value, .. } => {
-                Self::append_decode_map(dst, &field.name, key, value);
+                Self::append_decode_map(dst, &ident, key, value);
             }
-            IdlType::Named(name) => Self::append_decode_named(dst, &field.name, name),
+            IdlType::Named(name) => Self::append_decode_named(dst, &ident, name),
         }
     }
 

@@ -10,6 +10,7 @@
 
 #![allow(clippy::uninlined_format_args)]
 
+use super::super::keywords::c_ident;
 use super::{
     codec::{
         collect_c89_declarations, emit_decode_field, emit_encode_field, emit_max_field, label_to_c,
@@ -39,17 +40,18 @@ impl CGenerator {
         }
 
         for f in &s.fields {
+            let escaped = c_ident(&f.name);
             if let IdlType::Array { inner, size } = &f.field_type {
                 let base = Self::type_to_c(inner);
                 push_fmt(
                     &mut out,
-                    format_args!("{}    {} {}[{}];\n", self.indent(), base, f.name, size),
+                    format_args!("{}    {} {}[{}];\n", self.indent(), base, escaped, size),
                 );
             } else {
                 let cty = Self::type_to_c(&f.field_type);
                 push_fmt(
                     &mut out,
-                    format_args!("{}    {} {};\n", self.indent(), cty, f.name),
+                    format_args!("{}    {} {};\n", self.indent(), cty, escaped),
                 );
             }
         }
@@ -128,6 +130,7 @@ impl CGenerator {
                 next_pos += f.width;
                 p
             });
+            let escaped = c_ident(&f.name);
             push_fmt(
                 &mut out,
                 format_args!(
@@ -144,7 +147,7 @@ impl CGenerator {
                     "{}static inline uint64_t {n}_get_{f}(const {n}* s) {{ return (s->bits >> {start}) & ((1ull << {w}) - 1ull); }}\n",
                     self.indent(),
                     n = b.name,
-                    f = f.name,
+                    f = escaped,
                     start = start,
                     w = f.width
                 ),
@@ -155,7 +158,7 @@ impl CGenerator {
                     "{}static inline void {n}_set_{f}({n}* s, uint64_t v) {{ uint64_t mask = ((1ull << {w}) - 1ull) << {start}; s->bits = (s->bits & ~mask) | (((v) & ((1ull << {w}) - 1ull)) << {start}); }}\n",
                     self.indent(),
                     n = b.name,
-                    f = f.name,
+                    f = escaped,
                     w = f.width,
                     start = start
                 ),
@@ -229,23 +232,18 @@ impl CGenerator {
         );
         push_fmt(&mut out, format_args!("{}    union {{\n", self.indent()));
         for case in &u.cases {
+            let escaped = c_ident(&case.field.name);
             if let IdlType::Array { inner, size } = &case.field.field_type {
                 let base = Self::type_to_c(inner);
                 push_fmt(
                     &mut out,
-                    format_args!(
-                        "{}        {} {}[{}];\n",
-                        self.indent(),
-                        base,
-                        case.field.name,
-                        size
-                    ),
+                    format_args!("{}        {} {}[{}];\n", self.indent(), base, escaped, size),
                 );
             } else {
                 let cty = Self::type_to_c(&case.field.field_type);
                 push_fmt(
                     &mut out,
-                    format_args!("{}        {} {};\n", self.indent(), cty, case.field.name),
+                    format_args!("{}        {} {};\n", self.indent(), cty, escaped),
                 );
             }
         }

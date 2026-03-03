@@ -5,6 +5,7 @@
 //!
 //! Emits inline `encode_cdr2_le()` methods for struct types.
 
+use super::super::super::keywords::cpp_ident;
 use super::super::helpers::last_ident_owned;
 use super::super::index::DefinitionIndex;
 use crate::ast::Field;
@@ -17,10 +18,11 @@ pub(super) fn emit_encode_field_compat(
     indent: &str,
     fastdds_compat: bool,
 ) -> String {
+    let escaped = cpp_ident(&f.name);
     let base_expr = if fastdds_compat {
-        format!("this->m_{}", f.name)
+        format!("this->m_{}", escaped)
     } else {
-        format!("this->{}", f.name)
+        format!("this->{}", escaped)
     };
 
     if f.is_optional() {
@@ -47,12 +49,12 @@ pub(super) fn emit_encode_field_compat(
             &f.field_type,
             idx,
             &value_expr,
-            &f.name,
+            &escaped,
         ));
         let _ = writeln!(out, "{indent}}}");
         out
     } else {
-        emit_encode_type(indent, &f.field_type, idx, &base_expr, &f.name)
+        emit_encode_type(indent, &f.field_type, idx, &base_expr, &escaped)
     }
 }
 

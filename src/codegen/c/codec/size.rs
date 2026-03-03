@@ -5,6 +5,7 @@
 //!
 //! Generates `max_size` functions that compute worst-case buffer requirements.
 
+use super::super::super::keywords::c_ident;
 use super::super::{
     helpers::{c_name, last_ident, last_ident_owned},
     index::DefinitionIndex,
@@ -14,9 +15,10 @@ use crate::types::{IdlType, PrimitiveType};
 use std::fmt::Write;
 
 pub(super) fn emit_max_field(f: &Field, idx: &DefinitionIndex, parent: &str) -> String {
-    let value_expr = format!("{}->{}", parent, f.name);
+    let escaped = c_ident(&f.name);
+    let value_expr = format!("{}->{}", parent, escaped);
     let ptr_expr = format!("&({})", value_expr);
-    emit_max_type("    ", &f.field_type, idx, &value_expr, &ptr_expr, &f.name)
+    emit_max_type("    ", &f.field_type, idx, &value_expr, &ptr_expr, &escaped)
 }
 
 pub(super) fn label_to_c(discr: &IdlType, label: &str) -> String {

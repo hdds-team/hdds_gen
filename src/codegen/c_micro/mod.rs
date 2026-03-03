@@ -43,6 +43,8 @@ use crate::codegen::CodeGenerator;
 use crate::error::Result;
 use crate::types::{Annotation, IdlType, PrimitiveType};
 
+use super::keywords::c_ident;
+
 /// Configuration for C micro code generation
 #[derive(Debug, Clone)]
 pub struct CMicroConfig {
@@ -477,18 +479,19 @@ impl CMicroGenerator {
         Self::push_fmt(&mut output, format_args!("struct {} {{\n", s.name));
 
         for field in &s.fields {
+            let escaped = c_ident(&field.name);
             // Handle bounded strings first (string<N>)
             if let Some(bound) = Self::is_bounded_string(&field.field_type) {
                 Self::push_fmt(
                     &mut output,
-                    format_args!("    char {}[{}];\n", field.name, bound),
+                    format_args!("    char {}[{}];\n", escaped, bound),
                 );
             }
             // Handle bounded wstrings (wstring<N>)
             else if let Some(bound) = Self::is_bounded_wstring(&field.field_type) {
                 Self::push_fmt(
                     &mut output,
-                    format_args!("    uint16_t {}[{}];\n", field.name, bound),
+                    format_args!("    uint16_t {}[{}];\n", escaped, bound),
                 );
             }
             // Handle arrays specially (type goes after name)
@@ -496,7 +499,7 @@ impl CMicroGenerator {
                 let inner_c = self.type_to_c(inner);
                 Self::push_fmt(
                     &mut output,
-                    format_args!("    {} {}[{}];\n", inner_c, field.name, size),
+                    format_args!("    {} {}[{}];\n", inner_c, escaped, size),
                 );
             } else if let IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) =
                 &field.field_type
@@ -505,7 +508,7 @@ impl CMicroGenerator {
                 let bound = self.config.max_string_len;
                 Self::push_fmt(
                     &mut output,
-                    format_args!("    char {}[{}];\n", field.name, bound),
+                    format_args!("    char {}[{}];\n", escaped, bound),
                 );
             } else if let IdlType::Sequence { inner, bound } = &field.field_type {
                 // Inline sequence struct
@@ -517,15 +520,12 @@ impl CMicroGenerator {
                     &mut output,
                     format_args!(
                         "    struct {{ {} data[{}]; uint32_t count; }} {};\n",
-                        inner_c, cap, field.name
+                        inner_c, cap, escaped
                     ),
                 );
             } else {
                 let c_type = self.type_to_c(&field.field_type);
-                Self::push_fmt(
-                    &mut output,
-                    format_args!("    {} {};\n", c_type, field.name),
-                );
+                Self::push_fmt(&mut output, format_args!("    {} {};\n", c_type, escaped));
             }
         }
         output.push_str("};\n\n");
@@ -567,7 +567,8 @@ impl CMicroGenerator {
         output.push_str("    if (self == NULL || cdr == NULL) { return HDDS_CDR_ERR_NULL; }\n");
 
         for field in &s.fields {
-            output.push_str(&self.generate_field_encode(&field.name, &field.field_type, "self->"));
+            let escaped = c_ident(&field.name);
+            output.push_str(&self.generate_field_encode(&escaped, &field.field_type, "self->"));
         }
 
         output.push_str("    return HDDS_CDR_OK;\n");
@@ -720,7 +721,8 @@ impl CMicroGenerator {
         output.push_str("    if (self == NULL || cdr == NULL) { return HDDS_CDR_ERR_NULL; }\n");
 
         for field in &s.fields {
-            output.push_str(&self.generate_field_decode(&field.name, &field.field_type, "self->"));
+            let escaped = c_ident(&field.name);
+            output.push_str(&self.generate_field_decode(&escaped, &field.field_type, "self->"));
         }
 
         output.push_str("    return HDDS_CDR_OK;\n");
@@ -921,6 +923,7 @@ impl CMicroGenerator {
             output.push_str("    uint64_t hash = 14695981039346656037ULL;\n");
 
             for field in &key_fields {
+                let escaped = c_ident(&field.name);
                 output.push_str("    {\n");
 
                 // Check if it's a string type (bounded or unbounded)
@@ -934,7 +937,7 @@ impl CMicroGenerator {
                     // For strings: iterate each byte until null terminator
                     Self::push_fmt(
                         &mut output,
-                        format_args!("        const char* str = value->{};\n", field.name),
+                        format_args!("        const char* str = value->{};\n", escaped),
                     );
                     output.push_str("        while (*str) {\n");
                     output.push_str("            hash ^= (uint8_t)*str;\n");
@@ -947,7 +950,7 @@ impl CMicroGenerator {
                         &mut output,
                         format_args!(
                             "        const uint8_t* ptr = (const uint8_t*)&value->{};\n",
-                            field.name
+                            escaped
                         ),
                     );
                     let size = Self::get_primitive_size(&field.field_type);
@@ -995,17 +998,18 @@ impl CMicroGenerator {
         output.push_str("    union {\n");
 
         for case in &u.cases {
+            let escaped = c_ident(&case.field.name);
             let c_type = self.type_to_c(&case.field.field_type);
             if let IdlType::Array { inner, size } = &case.field.field_type {
                 let inner_c = self.type_to_c(inner);
                 Self::push_fmt(
                     &mut output,
-                    format_args!("        {} {}[{}];\n", inner_c, case.field.name, size),
+                    format_args!("        {} {}[{}];\n", inner_c, escaped, size),
                 );
             } else {
                 Self::push_fmt(
                     &mut output,
-                    format_args!("        {} {};\n", c_type, case.field.name),
+                    format_args!("        {} {};\n", c_type, escaped),
                 );
             }
         }
@@ -1062,8 +1066,9 @@ impl CMicroGenerator {
             }
 
             // Encode the field
+            let escaped = c_ident(&case.field.name);
             output.push_str(&self.generate_field_encode(
-                &case.field.name,
+                &escaped,
                 &case.field.field_type,
                 "self->_u.",
             ));
@@ -1128,8 +1133,9 @@ impl CMicroGenerator {
             }
 
             // Decode the field
+            let escaped = c_ident(&case.field.name);
             output.push_str(&self.generate_field_decode(
-                &case.field.name,
+                &escaped,
                 &case.field.field_type,
                 "self->_u.",
             ));

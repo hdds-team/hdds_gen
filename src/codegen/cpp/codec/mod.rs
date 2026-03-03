@@ -10,6 +10,7 @@
 
 #![allow(clippy::uninlined_format_args)]
 
+use super::super::keywords::cpp_ident;
 use super::index::DefinitionIndex;
 use crate::ast::{Field, Struct};
 use crate::types::{Annotation, AutoIdKind, ExtensibilityKind, IdlType, PrimitiveType};
@@ -416,10 +417,11 @@ fn generate_mutable_codec(
         );
 
         // For optional fields in MUTABLE structs, skip the entire field if absent
+        let escaped = cpp_ident(&field.name);
         let field_value_expr = if fastdds_compat {
-            format!("this->m_{}", field.name)
+            format!("this->m_{}", escaped)
         } else {
-            format!("this->{}", field.name)
+            format!("this->{}", escaped)
         };
 
         if is_optional {
@@ -491,7 +493,7 @@ fn generate_mutable_codec(
                 &field.field_type,
                 idx,
                 &deref_expr,
-                &field.name,
+                &escaped,
             ));
         } else {
             out.push_str(&encode::emit_encode_type_for_mutable(
@@ -499,7 +501,7 @@ fn generate_mutable_codec(
                 &field.field_type,
                 idx,
                 &field_value_expr,
-                &field.name,
+                &escaped,
             ));
         }
 
@@ -668,6 +670,7 @@ fn generate_mutable_decode(
     let _ = writeln!(out, "{indent}        switch (member_id) {{");
 
     for (field_idx, field) in s.fields.iter().enumerate() {
+        let escaped = cpp_ident(&field.name);
         let member_id = compute_member_id(s, field_idx, field);
         let is_optional = field.is_optional();
         let _ = writeln!(
@@ -683,27 +686,27 @@ fn generate_mutable_decode(
             // Decode into a temp, then assign to the optional
             let inner_type = super::helpers::type_to_cpp(&field.field_type);
             let field_expr = if fastdds_compat {
-                format!("this->m_{}", field.name)
+                format!("this->m_{}", escaped)
             } else {
-                format!("this->{}", field.name)
+                format!("this->{}", escaped)
             };
             let _ = writeln!(
                 out,
                 "{indent}                {inner_type} tmp_{}{{}};\n",
-                field.name
+                escaped
             );
             let field_decode = decode::emit_decode_type_for_mutable(
                 &format!("{indent}                "),
                 &field.field_type,
                 idx,
-                &format!("tmp_{}", field.name),
-                &field.name,
+                &format!("tmp_{}", escaped),
+                &escaped,
             );
             out.push_str(&field_decode);
             let _ = writeln!(
                 out,
                 "{indent}                {field_expr} = std::move(tmp_{name});",
-                name = field.name
+                name = escaped
             );
         } else {
             let field_decode = decode::emit_decode_field_compat(
