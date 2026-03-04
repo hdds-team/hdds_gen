@@ -5,6 +5,7 @@
 //!
 //! Generates Rust struct definitions from IDL struct types.
 
+use super::super::keywords::rust_ident;
 use super::{push_fmt, RustGenerator};
 use crate::ast::{Field, Struct};
 use crate::types::{Annotation, IdlType, PrimitiveType};
@@ -51,12 +52,13 @@ impl RustGenerator {
                 IdlType::Array { .. } | IdlType::Sequence { .. } | IdlType::Map { .. }
             );
 
-            let field_name = &field.name;
+            let field_name = rust_ident(&field.name);
             if needs_comment {
                 push_fmt(
                     &mut output,
                     format_args!(
-                        "{indent}    pub {field_name}: {field_type},  // was: {idl_type} {field_name}\n"
+                        "{indent}    pub {field_name}: {field_type},  // was: {idl_type} {}\n",
+                        field.name,
                     ),
                 );
             } else {
@@ -115,10 +117,11 @@ impl RustGenerator {
 
         for field in &s.fields {
             let field_type = Self::type_to_rust(&field.field_type);
+            let fname = rust_ident(&field.name);
             // All builder fields are Option<T>, even if already optional in struct
             push_fmt(
                 &mut output,
-                format_args!("    {}: Option<{field_type}>,\n", field.name),
+                format_args!("    {fname}: Option<{field_type}>,\n"),
             );
         }
         output.push_str("}\n\n");
@@ -127,7 +130,7 @@ impl RustGenerator {
         push_fmt(&mut output, format_args!("impl {builder_name} {{\n"));
 
         for field in &s.fields {
-            let field_name = &field.name;
+            let field_name = rust_ident(&field.name);
 
             // Use Into<T> for String types for ergonomics
             let (param_type, conversion) = Self::builder_param_type(&field.field_type);
@@ -161,7 +164,7 @@ impl RustGenerator {
         output.push_str(" {\n");
 
         for field in &s.fields {
-            let field_name = &field.name;
+            let field_name = rust_ident(&field.name);
             let unwrap_expr = Self::builder_unwrap_expr(field);
             push_fmt(
                 &mut output,
@@ -198,7 +201,8 @@ impl RustGenerator {
 
     /// Get the unwrap expression for a field in `build()`
     fn builder_unwrap_expr(field: &Field) -> String {
-        let field_name = &field.name;
+        let field_name = rust_ident(&field.name);
+        let raw_name = &field.name;
         let box_wrap = field.is_external();
 
         // Check for @default annotation
@@ -224,11 +228,11 @@ impl RustGenerator {
 
         // @external required field
         if box_wrap {
-            return format!("Box::new(self.{field_name}.ok_or(\"{field_name} is required\")?)");
+            return format!("Box::new(self.{field_name}.ok_or(\"{raw_name} is required\")?)");
         }
 
         // Required field
-        format!("self.{field_name}.ok_or(\"{field_name} is required\")?")
+        format!("self.{field_name}.ok_or(\"{raw_name} is required\")?")
     }
 
     /// Convert IDL default value to Rust syntax

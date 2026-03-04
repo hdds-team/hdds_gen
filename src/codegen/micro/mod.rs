@@ -43,6 +43,8 @@ use crate::codegen::CodeGenerator;
 use crate::error::Result;
 use crate::types::{Annotation, IdlType, PrimitiveType};
 
+use super::keywords::rust_ident;
+
 mod decode;
 mod encode;
 mod types;
@@ -201,10 +203,11 @@ impl MicroGenerator {
         Self::push_fmt(&mut output, format_args!("pub struct {} {{\n", s.name));
 
         for field in &s.fields {
+            let escaped = rust_ident(&field.name);
             let rust_type = self.type_to_rust_micro(&field.field_type);
             Self::push_fmt(
                 &mut output,
-                format_args!("    pub {}: {},\n", field.name, rust_type),
+                format_args!("    pub {}: {},\n", escaped, rust_type),
             );
         }
         output.push_str("}\n\n");
@@ -732,7 +735,8 @@ impl MicroGenerator {
             .push_str("    pub fn encode(&self, enc: &mut CdrEncoder) -> Result<(), CdrError> {\n");
 
         for field in &s.fields {
-            output.push_str(&Self::generate_field_encode(&field.name, &field.field_type));
+            let escaped = rust_ident(&field.name);
+            output.push_str(&Self::generate_field_encode(&escaped, &field.field_type));
         }
 
         output.push_str("        Ok(())\n");
@@ -841,7 +845,8 @@ impl MicroGenerator {
         output.push_str("        Ok(Self {\n");
 
         for field in &s.fields {
-            output.push_str(&self.generate_field_decode(&field.name, &field.field_type));
+            let escaped = rust_ident(&field.name);
+            output.push_str(&self.generate_field_decode(&escaped, &field.field_type));
         }
 
         output.push_str("        })\n");
@@ -1009,6 +1014,7 @@ impl MicroGenerator {
             output.push_str("        const PRIME: u64 = 1099511628211;\n\n");
 
             for (field, field_type) in &key_fields {
+                let escaped = rust_ident(field);
                 Self::push_fmt(
                     &mut output,
                     format_args!("        // Hash @key field: {}\n", field),
@@ -1025,12 +1031,12 @@ impl MicroGenerator {
                 if is_string {
                     Self::push_fmt(
                         &mut output,
-                        format_args!("        for &b in self.{}.as_bytes() {{\n", field),
+                        format_args!("        for &b in self.{}.as_bytes() {{\n", escaped),
                     );
                 } else {
                     Self::push_fmt(
                         &mut output,
-                        format_args!("        for b in self.{}.to_le_bytes() {{\n", field),
+                        format_args!("        for b in self.{}.to_le_bytes() {{\n", escaped),
                     );
                 }
                 output.push_str("            hash ^= u64::from(b);\n");

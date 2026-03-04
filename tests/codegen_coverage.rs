@@ -327,3 +327,53 @@ fn c_micro_enum() {
     let out = gen(Backend::CMicro, "enum Status { OK, ERROR };");
     assert!(out.contains("Status"), "missing enum: {out}");
 }
+
+// ---------------------------------------------------------------------------
+// Keyword escaping
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_escapes_type_field() {
+    let out = gen(Backend::Rust, "struct S { int32_t type; };");
+    assert!(out.contains("r#type"), "keyword 'type' not escaped: {out}");
+    assert!(
+        !out.contains("pub type:"),
+        "raw keyword as struct field: {out}"
+    );
+}
+
+#[test]
+fn rust_escapes_match_field() {
+    let out = gen(Backend::Rust, "struct S { int32_t match; };");
+    assert!(
+        out.contains("r#match"),
+        "keyword 'match' not escaped: {out}"
+    );
+}
+
+#[test]
+fn python_escapes_class_field() {
+    let out = gen(Backend::Python, "struct S { int32_t class; };");
+    assert!(out.contains("class_"), "keyword 'class' not escaped: {out}");
+}
+
+#[test]
+fn cpp_escapes_class_field() {
+    let out = gen(Backend::Cpp, "struct S { int32_t class; };");
+    assert!(out.contains("class_"), "keyword 'class' not escaped: {out}");
+}
+
+#[test]
+fn ts_escapes_type_field() {
+    let out = gen(Backend::TypeScript, "struct S { int32_t type; };");
+    assert!(out.contains("type_"), "keyword 'type' not escaped: {out}");
+}
+
+#[test]
+fn c_escapes_register_field() {
+    let out = gen(Backend::C, "struct S { int32_t register; };");
+    assert!(
+        out.contains("register_"),
+        "keyword 'register' not escaped: {out}"
+    );
+}

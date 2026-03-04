@@ -5,6 +5,7 @@
 //!
 //! Generates C++ struct definitions with member variables and codecs.
 
+use super::super::keywords::cpp_ident;
 use super::codec;
 use super::helpers::{cpp_default_init, push_fmt, type_to_cpp};
 use super::index::DefinitionIndex;
@@ -47,7 +48,7 @@ pub(super) fn generate_struct(
             let is_primitive =
                 matches!(field.field_type, IdlType::Primitive(_)) && !field.is_optional();
 
-            let fname = &field.name;
+            let fname = cpp_ident(&field.name);
             // Getter - return by value for primitives, const ref for complex types
             if is_primitive {
                 push_fmt(
@@ -109,7 +110,7 @@ pub(super) fn generate_struct(
             } else {
                 base_type
             };
-            let fname = &field.name;
+            let fname = cpp_ident(&field.name);
             push_fmt(
                 &mut output,
                 format_args!("{member_indent}{field_type} m_{fname};\n"),
@@ -125,7 +126,7 @@ pub(super) fn generate_struct(
                 base_type
             };
             let idl_type = field.field_type.to_idl_string();
-            let fname = &field.name;
+            let fname = cpp_ident(&field.name);
             let default_init = if field.is_optional() {
                 ""
             } else {
@@ -140,7 +141,8 @@ pub(super) fn generate_struct(
                 push_fmt(
                     &mut output,
                     format_args!(
-                        "{member_indent}{field_type} {fname}{default_init};  // was: {idl_type} {fname}\n"
+                        "{member_indent}{field_type} {fname}{default_init};  // was: {idl_type} {}\n",
+                        field.name
                     ),
                 );
             } else {
@@ -170,13 +172,17 @@ pub(super) fn generate_struct(
                     } else {
                         base_type
                     };
-                    format!("{ft} {fname}", fname = f.name)
+                    let fname = cpp_ident(&f.name);
+                    format!("{ft} {fname}")
                 })
                 .collect();
             let init_list: Vec<String> = s
                 .fields
                 .iter()
-                .map(|f| format!("{fname}(std::move({fname}))", fname = f.name))
+                .map(|f| {
+                    let fname = cpp_ident(&f.name);
+                    format!("{fname}(std::move({fname}))")
+                })
                 .collect();
 
             push_fmt(

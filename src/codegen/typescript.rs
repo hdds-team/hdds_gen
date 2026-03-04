@@ -19,6 +19,8 @@ use crate::error::Result;
 use crate::types::{Annotation, AutoIdKind, ExtensibilityKind, IdlType, PrimitiveType};
 use std::fmt::Write;
 
+use super::keywords::ts_ident;
+
 fn push_fmt(dst: &mut String, args: std::fmt::Arguments<'_>) {
     let _ = dst.write_fmt(args);
 }
@@ -372,12 +374,13 @@ impl TypeScriptGenerator {
         // Interface definition
         push_fmt(&mut out, format_args!("export interface {} {{\n", s.name));
         for field in &s.fields {
+            let escaped = ts_ident(&field.name);
             let ts_type = Self::type_to_ts(&field.field_type);
             let optional = field.is_optional();
             if optional {
-                push_fmt(&mut out, format_args!("  {}?: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}?: {};\n", escaped, ts_type));
             } else {
-                push_fmt(&mut out, format_args!("  {}: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}: {};\n", escaped, ts_type));
             }
         }
         out.push_str("}\n\n");
@@ -391,12 +394,8 @@ impl TypeScriptGenerator {
             ),
         );
         for field in &s.fields {
-            Self::emit_encode_field(
-                &mut out,
-                &field.name,
-                &field.field_type,
-                field.is_optional(),
-            );
+            let escaped = ts_ident(&field.name);
+            Self::emit_encode_field(&mut out, &escaped, &field.field_type, field.is_optional());
         }
         out.push_str("}\n\n");
 
@@ -410,12 +409,8 @@ impl TypeScriptGenerator {
         );
         out.push_str("  const obj: any = {};\n");
         for field in &s.fields {
-            Self::emit_decode_field(
-                &mut out,
-                &field.name,
-                &field.field_type,
-                field.is_optional(),
-            );
+            let escaped = ts_ident(&field.name);
+            Self::emit_decode_field(&mut out, &escaped, &field.field_type, field.is_optional());
         }
         push_fmt(&mut out, format_args!("  return obj as {};\n", s.name));
         out.push_str("}\n\n");
@@ -434,12 +429,13 @@ impl TypeScriptGenerator {
         // Interface definition
         push_fmt(&mut out, format_args!("export interface {} {{\n", s.name));
         for field in &s.fields {
+            let escaped = ts_ident(&field.name);
             let ts_type = Self::type_to_ts(&field.field_type);
             let optional = field.is_optional();
             if optional {
-                push_fmt(&mut out, format_args!("  {}?: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}?: {};\n", escaped, ts_type));
             } else {
-                push_fmt(&mut out, format_args!("  {}: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}: {};\n", escaped, ts_type));
             }
         }
         out.push_str("}\n\n");
@@ -458,12 +454,8 @@ impl TypeScriptGenerator {
         out.push_str("  const payloadStart = buf.position;\n\n");
 
         for field in &s.fields {
-            Self::emit_encode_field(
-                &mut out,
-                &field.name,
-                &field.field_type,
-                field.is_optional(),
-            );
+            let escaped = ts_ident(&field.name);
+            Self::emit_encode_field(&mut out, &escaped, &field.field_type, field.is_optional());
         }
 
         out.push_str("\n  // Fill DHEADER with actual payload length\n");
@@ -486,12 +478,8 @@ impl TypeScriptGenerator {
         out.push_str("  const _dheaderLen = buf.readUint32();\n");
         out.push_str("  const obj: any = {};\n");
         for field in &s.fields {
-            Self::emit_decode_field(
-                &mut out,
-                &field.name,
-                &field.field_type,
-                field.is_optional(),
-            );
+            let escaped = ts_ident(&field.name);
+            Self::emit_decode_field(&mut out, &escaped, &field.field_type, field.is_optional());
         }
         push_fmt(&mut out, format_args!("  return obj as {};\n", s.name));
         out.push_str("}\n\n");
@@ -510,12 +498,13 @@ impl TypeScriptGenerator {
         // Interface definition
         push_fmt(&mut out, format_args!("export interface {} {{\n", s.name));
         for field in &s.fields {
+            let escaped = ts_ident(&field.name);
             let ts_type = Self::type_to_ts(&field.field_type);
             let optional = field.is_optional();
             if optional {
-                push_fmt(&mut out, format_args!("  {}?: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}?: {};\n", escaped, ts_type));
             } else {
-                push_fmt(&mut out, format_args!("  {}: {};\n", field.name, ts_type));
+                push_fmt(&mut out, format_args!("  {}: {};\n", escaped, ts_type));
             }
         }
         out.push_str("}\n\n");
@@ -534,6 +523,7 @@ impl TypeScriptGenerator {
         out.push_str("  const payloadStart = buf.position;\n\n");
 
         for (idx, field) in s.fields.iter().enumerate() {
+            let escaped = ts_ident(&field.name);
             let member_id = compute_member_id(s, idx, field);
             let lc = compute_lc(&field.field_type);
             let use_nextint = lc == 5;
@@ -543,12 +533,12 @@ impl TypeScriptGenerator {
             if field.is_optional() {
                 push_fmt(
                     &mut out,
-                    format_args!("  if (obj.{} !== undefined) {{\n", field.name),
+                    format_args!("  if (obj.{} !== undefined) {{\n", escaped),
                 );
                 Self::emit_emheader_encode(&mut out, member_id, lc, use_nextint, mu, "    ");
                 Self::emit_mutable_field_encode(
                     &mut out,
-                    &field.name,
+                    &escaped,
                     &field.field_type,
                     use_nextint,
                     member_id,
@@ -559,7 +549,7 @@ impl TypeScriptGenerator {
                 Self::emit_emheader_encode(&mut out, member_id, lc, use_nextint, mu, "  ");
                 Self::emit_mutable_field_encode(
                     &mut out,
-                    &field.name,
+                    &escaped,
                     &field.field_type,
                     use_nextint,
                     member_id,
@@ -704,12 +694,13 @@ impl TypeScriptGenerator {
         out.push_str("    switch (memberId) {\n");
 
         for (idx, field) in s.fields.iter().enumerate() {
+            let escaped = ts_ident(&field.name);
             let member_id = compute_member_id(s, idx, field);
             push_fmt(
                 out,
                 format_args!("      case 0x{member_id:08X}: // {}\n", field.name),
             );
-            Self::emit_mutable_field_decode(out, &field.name, &field.field_type, "        ");
+            Self::emit_mutable_field_decode(out, &escaped, &field.field_type, "        ");
             out.push_str("        break;\n");
         }
 
@@ -758,6 +749,7 @@ impl TypeScriptGenerator {
             out.push_str("  const PRIME = 1099511628211n;\n\n");
 
             for (field, field_type) in &key_fields {
+                let escaped = ts_ident(field);
                 push_fmt(&mut out, format_args!("  // Hash @key field: {}\n", field));
 
                 // Check if field is a string type
@@ -771,7 +763,7 @@ impl TypeScriptGenerator {
                         &mut out,
                         format_args!(
                             "  const {}_bytes = new TextEncoder().encode(obj.{});\n",
-                            field, field
+                            escaped, escaped
                         ),
                     );
                 } else {
@@ -779,27 +771,39 @@ impl TypeScriptGenerator {
                     let (byte_size, set_method, is_bigint) = Self::get_dataview_info(field_type);
                     push_fmt(
                         &mut out,
-                        format_args!("  const {}_buf = new ArrayBuffer({});\n", field, byte_size),
+                        format_args!(
+                            "  const {}_buf = new ArrayBuffer({});\n",
+                            escaped, byte_size
+                        ),
                     );
                     push_fmt(
                         &mut out,
-                        format_args!("  const {}_view = new DataView({}_buf);\n", field, field),
+                        format_args!(
+                            "  const {}_view = new DataView({}_buf);\n",
+                            escaped, escaped
+                        ),
                     );
                     // Note: is_bigint is used for type checking but the generated code is the same
                     let _ = is_bigint;
                     push_fmt(
                         &mut out,
-                        format_args!("  {}_view.{}(0, obj.{}, true);\n", field, set_method, field),
+                        format_args!(
+                            "  {}_view.{}(0, obj.{}, true);\n",
+                            escaped, set_method, escaped
+                        ),
                     );
                     push_fmt(
                         &mut out,
-                        format_args!("  const {}_bytes = new Uint8Array({}_buf);\n", field, field),
+                        format_args!(
+                            "  const {}_bytes = new Uint8Array({}_buf);\n",
+                            escaped, escaped
+                        ),
                     );
                 }
 
                 push_fmt(
                     &mut out,
-                    format_args!("  for (const b of {}_bytes) {{\n", field),
+                    format_args!("  for (const b of {}_bytes) {{\n", escaped),
                 );
                 out.push_str("    hash ^= BigInt(b);\n");
                 out.push_str("    hash = (hash * PRIME) & 0xFFFFFFFFFFFFFFFFn;\n");
@@ -1225,14 +1229,12 @@ impl TypeScriptGenerator {
         // Generate interface for each case
         push_fmt(&mut out, format_args!("// Union: {}\n", u.name));
         for case in &u.cases {
+            let escaped = ts_ident(&case.field.name);
             let case_name = format!("{}_{}", u.name, case.field.name);
             push_fmt(&mut out, format_args!("export interface {case_name} {{\n"));
             push_fmt(&mut out, format_args!("  discriminator: {disc_type};\n"));
             let field_type = Self::type_to_ts(&case.field.field_type);
-            push_fmt(
-                &mut out,
-                format_args!("  {}: {};\n", case.field.name, field_type),
-            );
+            push_fmt(&mut out, format_args!("  {}: {};\n", escaped, field_type));
             out.push_str("}\n");
         }
 
@@ -1288,11 +1290,12 @@ impl TypeScriptGenerator {
 
             // Type guard and encode value
             let field_name = &case.field.name;
+            let escaped_field = ts_ident(field_name);
             push_fmt(
                 &mut out,
                 format_args!(
                     "    const v = (obj as {}_{}).{};\n",
-                    u.name, field_name, field_name
+                    u.name, field_name, escaped_field
                 ),
             );
             Self::emit_encode_union_value(&mut out, "v", &case.field.field_type, "    ");
@@ -1344,12 +1347,13 @@ impl TypeScriptGenerator {
 
             // Decode the value and return the appropriate variant
             let field_name = &case.field.name;
+            let escaped_field = ts_ident(field_name);
             let decode_expr = Self::decode_value_expr(&case.field.field_type);
             push_fmt(
                 &mut out,
                 format_args!(
                     "    return {{ discriminator: disc, {}: {} }} as {};\n",
-                    field_name, decode_expr, u.name
+                    escaped_field, decode_expr, u.name
                 ),
             );
         }
@@ -1489,16 +1493,14 @@ impl TypeScriptGenerator {
         push_fmt(&mut out, format_args!("// Bitset: {}\n", b.name));
         push_fmt(&mut out, format_args!("export interface {} {{\n", b.name));
         for field in &b.fields {
+            let escaped = ts_ident(&field.name);
             // Use boolean for single-bit fields, number for multi-bit fields
             let field_type = if field.width == 1 {
                 "boolean"
             } else {
                 "number"
             };
-            push_fmt(
-                &mut out,
-                format_args!("  {}: {};\n", field.name, field_type),
-            );
+            push_fmt(&mut out, format_args!("  {}: {};\n", escaped, field_type));
         }
         out.push_str("}\n\n");
 
@@ -1514,13 +1516,14 @@ impl TypeScriptGenerator {
 
         let mut offset: u32 = 0;
         for field in &b.fields {
+            let escaped = ts_ident(&field.name);
             if field.width == 1 {
                 // Single bit: boolean
                 push_fmt(
                     &mut out,
                     format_args!(
                         "  packed |= BigInt(obj.{} ? 1 : 0) << {}n;\n",
-                        field.name, offset
+                        escaped, offset
                     ),
                 );
             } else {
@@ -1530,7 +1533,7 @@ impl TypeScriptGenerator {
                     &mut out,
                     format_args!(
                         "  packed |= (BigInt(obj.{}) & 0x{:X}n) << {}n;\n",
-                        field.name, mask, offset
+                        escaped, mask, offset
                     ),
                 );
             }
@@ -1553,6 +1556,7 @@ impl TypeScriptGenerator {
 
         let mut offset: u32 = 0;
         for (i, field) in b.fields.iter().enumerate() {
+            let escaped = ts_ident(&field.name);
             let comma = if i < b.fields.len() - 1 { "," } else { "" };
             if field.width == 1 {
                 // Single bit: convert to boolean
@@ -1560,7 +1564,7 @@ impl TypeScriptGenerator {
                     &mut out,
                     format_args!(
                         "    {}: ((packed >> {}n) & 1n) !== 0n{}\n",
-                        field.name, offset, comma
+                        escaped, offset, comma
                     ),
                 );
             } else {
@@ -1570,7 +1574,7 @@ impl TypeScriptGenerator {
                     &mut out,
                     format_args!(
                         "    {}: Number((packed >> {}n) & 0x{:X}n){}\n",
-                        field.name, offset, mask, comma
+                        escaped, offset, mask, comma
                     ),
                 );
             }

@@ -5,6 +5,7 @@
 //!
 //! Emits inline `decode_cdr2_le()` methods for struct types.
 
+use super::super::super::keywords::cpp_ident;
 use super::super::helpers::last_ident_owned;
 use super::super::index::DefinitionIndex;
 use crate::ast::Field;
@@ -17,10 +18,11 @@ pub(super) fn emit_decode_field_compat(
     indent: &str,
     fastdds_compat: bool,
 ) -> String {
+    let escaped = cpp_ident(&f.name);
     let base_expr = if fastdds_compat {
-        format!("this->m_{}", f.name)
+        format!("this->m_{}", escaped)
     } else {
-        format!("this->{}", f.name)
+        format!("this->{}", escaped)
     };
 
     if f.is_optional() {
@@ -39,26 +41,26 @@ pub(super) fn emit_decode_field_compat(
         let _ = writeln!(
             out,
             "{indent}    bool has_{name} = (src[offset++] != 0);",
-            name = f.name
+            name = escaped
         );
-        let _ = writeln!(out, "{indent}    if (has_{name}) {{", name = f.name);
+        let _ = writeln!(out, "{indent}    if (has_{name}) {{", name = escaped);
 
         // Create a temporary to decode into, then assign to optional
         let inner_type = super::super::helpers::type_to_cpp(&f.field_type);
-        let _ = writeln!(out, "{indent}        {inner_type} tmp_{}{{}};\n", f.name);
+        let _ = writeln!(out, "{indent}        {inner_type} tmp_{}{{}};\n", escaped);
         // Decode the value into temp variable
-        let temp_expr = format!("tmp_{}", f.name);
+        let temp_expr = format!("tmp_{}", escaped);
         out.push_str(&emit_decode_type(
             &format!("{indent}        "),
             &f.field_type,
             idx,
             &temp_expr,
-            &f.name,
+            &escaped,
         ));
         let _ = writeln!(
             out,
             "{indent}        {base_expr} = std::move(tmp_{name});",
-            name = f.name
+            name = escaped
         );
         let _ = writeln!(out, "{indent}    }} else {{");
         let _ = writeln!(out, "{indent}        {base_expr} = std::nullopt;");
@@ -66,7 +68,7 @@ pub(super) fn emit_decode_field_compat(
         let _ = writeln!(out, "{indent}}}");
         out
     } else {
-        emit_decode_type(indent, &f.field_type, idx, &base_expr, &f.name)
+        emit_decode_type(indent, &f.field_type, idx, &base_expr, &escaped)
     }
 }
 

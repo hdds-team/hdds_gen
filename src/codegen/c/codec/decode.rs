@@ -5,6 +5,7 @@
 //!
 //! Emits field-by-field deserialization code.
 
+use super::super::super::keywords::c_ident;
 use super::super::{
     helpers::{c_name, last_ident_owned},
     index::DefinitionIndex,
@@ -20,7 +21,8 @@ pub(super) fn emit_decode_field(
     parent: &str,
     c_std: CStandard,
 ) -> String {
-    let value_expr = format!("{}->{}", parent, f.name);
+    let escaped = c_ident(&f.name);
+    let value_expr = format!("{}->{}", parent, escaped);
     let ptr_expr = format!("&({})", value_expr);
     emit_decode_type(
         "    ",
@@ -28,7 +30,7 @@ pub(super) fn emit_decode_field(
         idx,
         &value_expr,
         &ptr_expr,
-        &f.name,
+        &escaped,
         c_std,
     )
 }
