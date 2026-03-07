@@ -202,6 +202,28 @@ impl Parser {
                                     self.advance();
                                     v
                                 }
+                                TokenKind::Minus => {
+                                    self.advance();
+                                    match self.peek() {
+                                        TokenKind::IntegerLiteral(n) => {
+                                            let v = format!("-{}", n);
+                                            self.advance();
+                                            v
+                                        }
+                                        TokenKind::FloatLiteral(f) => {
+                                            let v = format!("-{}", f);
+                                            self.advance();
+                                            v
+                                        }
+                                        _ => {
+                                            return Err(ParseError::new(
+                                                ErrorKind::InvalidSyntax,
+                                                self.current_position(),
+                                                "Expected numeric value after '-'",
+                                            ));
+                                        }
+                                    }
+                                }
                                 _ => {
                                     return Err(ParseError::new(
                                         ErrorKind::InvalidSyntax,
