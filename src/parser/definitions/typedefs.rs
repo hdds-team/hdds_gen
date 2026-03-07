@@ -32,23 +32,7 @@ impl Parser {
         // This wraps the base_type in an Array type
         let final_type = if self.check(&TokenKind::LeftBracket) {
             self.advance(); // consume '['
-            let size = if let TokenKind::IntegerLiteral(n) = &self.current_token().kind {
-                let s = u32::try_from(*n).map_err(|_| {
-                    ParseError::new(
-                        ErrorKind::InvalidSyntax,
-                        self.current_position(),
-                        "Array size must be a positive integer that fits in u32",
-                    )
-                })?;
-                self.advance();
-                s
-            } else {
-                return Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    self.current_position(),
-                    "Expected array size",
-                ));
-            };
+            let size = self.parse_bound_u32("array bound")?;
             self.expect(&TokenKind::RightBracket, "Expected ']' after array size")?;
             IdlType::Array {
                 inner: Box::new(base_type),

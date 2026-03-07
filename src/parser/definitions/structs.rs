@@ -102,18 +102,7 @@ impl Parser {
         while self.check(&TokenKind::LeftBracket) {
             self.advance();
 
-            let size = if let TokenKind::IntegerLiteral(n) = self.peek() {
-                let literal_pos = self.current_position();
-                let raw = *n;
-                self.advance();
-                Self::literal_u32(raw, literal_pos, "Array bound")?
-            } else {
-                return Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    self.current_position(),
-                    "Expected array size",
-                ));
-            };
+            let size = self.parse_bound_u32("array bound")?;
 
             self.expect(&TokenKind::RightBracket, "Expected ']' after array size")?;
             dimensions.push(size);

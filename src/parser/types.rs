@@ -107,17 +107,10 @@ impl Parser {
             }
             TokenKind::String => {
                 self.advance();
-                // Check for bounded string: string<N>
+                // Check for bounded string: string<N> or string<CONST>
                 if self.check(&TokenKind::LeftAngle) {
                     self.advance(); // consume <
-                    let bound = if let TokenKind::IntegerLiteral(n) = self.peek() {
-                        let literal_pos = self.current_position();
-                        let raw = *n;
-                        self.advance();
-                        Some(Self::literal_u32(raw, literal_pos, "string bound")?)
-                    } else {
-                        None
-                    };
+                    let bound = Some(self.parse_bound_u32("string bound")?);
                     self.expect_angle_close("Expected '>' after string bound")?;
 
                     // Return as a bounded sequence of char (for bounded strings)
@@ -133,14 +126,7 @@ impl Parser {
                 self.advance();
                 if self.check(&TokenKind::LeftAngle) {
                     self.advance();
-                    let bound = if let TokenKind::IntegerLiteral(n) = self.peek() {
-                        let literal_pos = self.current_position();
-                        let raw = *n;
-                        self.advance();
-                        Some(Self::literal_u32(raw, literal_pos, "wstring bound")?)
-                    } else {
-                        None
-                    };
+                    let bound = Some(self.parse_bound_u32("wstring bound")?);
                     self.expect_angle_close("Expected '>' after wstring bound")?;
                     Ok(IdlType::Sequence {
                         inner: Box::new(IdlType::Primitive(PrimitiveType::WChar)),
@@ -180,14 +166,7 @@ impl Parser {
                 // Check for bound
                 let bound = if self.check(&TokenKind::Comma) {
                     self.advance();
-                    if let TokenKind::IntegerLiteral(n) = self.peek() {
-                        let literal_pos = self.current_position();
-                        let raw = *n;
-                        self.advance();
-                        Some(Self::literal_u32(raw, literal_pos, "sequence bound")?)
-                    } else {
-                        None
-                    }
+                    Some(self.parse_bound_u32("sequence bound")?)
                 } else {
                     None
                 };
@@ -206,29 +185,18 @@ impl Parser {
                 self.expect(&TokenKind::Comma, "Expected ',' in map type")?;
                 let value = Box::new(self.parse_type()?);
 
-                // Optional bound: , N
+                // Optional bound: , N or , CONST
                 let bound = if self.check(&TokenKind::Comma) {
                     self.advance();
-                    if let TokenKind::IntegerLiteral(n) = self.peek() {
-                        let literal_pos = self.current_position();
-                        let raw = *n;
-                        self.advance();
-                        let val = Self::literal_u32(raw, literal_pos, "map bound")?;
-                        if val == 0 {
-                            return Err(ParseError::new(
-                                ErrorKind::InvalidSyntax,
-                                self.current_position(),
-                                "Bound for map<K,V,N> must be > 0",
-                            ));
-                        }
-                        Some(val)
-                    } else {
+                    let val = self.parse_bound_u32("map bound")?;
+                    if val == 0 {
                         return Err(ParseError::new(
                             ErrorKind::InvalidSyntax,
                             self.current_position(),
-                            "Expected integer bound for map<K,V,N>",
+                            "Bound for map<K,V,N> must be > 0",
                         ));
                     }
+                    Some(val)
                 } else {
                     None
                 };
@@ -240,31 +208,9 @@ impl Parser {
             TokenKind::Fixed => {
                 self.advance();
                 self.expect(&TokenKind::LeftAngle, "Expected '<' after 'fixed'")?;
-                let digits = if let TokenKind::IntegerLiteral(n) = self.peek() {
-                    let literal_pos = self.current_position();
-                    let raw = *n;
-                    self.advance();
-                    Self::literal_u32(raw, literal_pos, "fixed digits")?
-                } else {
-                    return Err(ParseError::new(
-                        ErrorKind::InvalidSyntax,
-                        self.current_position(),
-                        "Expected digits for fixed<d,s>",
-                    ));
-                };
+                let digits = self.parse_bound_u32("fixed digits")?;
                 self.expect(&TokenKind::Comma, "Expected ',' in fixed<d,s>")?;
-                let scale = if let TokenKind::IntegerLiteral(n) = self.peek() {
-                    let literal_pos = self.current_position();
-                    let raw = *n;
-                    self.advance();
-                    Self::literal_u32(raw, literal_pos, "fixed scale")?
-                } else {
-                    return Err(ParseError::new(
-                        ErrorKind::InvalidSyntax,
-                        self.current_position(),
-                        "Expected scale for fixed<d,s>",
-                    ));
-                };
+                let scale = self.parse_bound_u32("fixed scale")?;
                 self.expect_angle_close("Expected '>' after fixed<d,s>")?;
                 Ok(IdlType::Primitive(PrimitiveType::Fixed { digits, scale }))
             }

@@ -116,6 +116,42 @@ impl Parser {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(kind)
     }
 
+    /// Parse a bound value: either an integer literal or a const identifier.
+    pub(super) fn parse_bound_u32(&mut self, context: &str) -> Result<u32> {
+        let pos = self.current_position();
+        match self.peek() {
+            TokenKind::IntegerLiteral(n) => {
+                let raw = *n;
+                self.advance();
+                Self::literal_u32(raw, pos, context)
+            }
+            TokenKind::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+                let val = self.const_env.get(&name).ok_or_else(|| {
+                    ParseError::new(
+                        ErrorKind::InvalidSyntax,
+                        pos,
+                        format!("Unknown constant '{name}' used as {context}"),
+                    )
+                })?;
+                let int_val = val.as_int().map_err(|_| {
+                    ParseError::new(
+                        ErrorKind::InvalidSyntax,
+                        pos,
+                        format!("Constant '{name}' is not an integer"),
+                    )
+                })?;
+                Self::literal_u32(int_val, pos, context)
+            }
+            _ => Err(ParseError::new(
+                ErrorKind::InvalidSyntax,
+                pos,
+                format!("Expected integer or constant for {context}"),
+            )),
+        }
+    }
+
     pub(super) fn literal_u32(value: i64, position: Position, context: &str) -> Result<u32> {
         if value < 0 {
             return Err(ParseError::new(
