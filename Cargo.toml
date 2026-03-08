@@ -3,7 +3,7 @@
 
 [package]
 name = "hddsgen"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2021"
 authors = ["naskel.com"]
 description = "IDL 4.2 parser and code generator for HDDS"
