@@ -24,15 +24,47 @@ pub(super) fn emit_decode_field(
     let escaped = c_ident(&f.name);
     let value_expr = format!("{}->{}", parent, escaped);
     let ptr_expr = format!("&({})", value_expr);
-    emit_decode_type(
-        "    ",
-        &f.field_type,
-        idx,
-        &value_expr,
-        &ptr_expr,
-        &escaped,
-        c_std,
-    )
+
+    if f.is_optional() {
+        let mut out = String::new();
+        let _ = write!(
+            out,
+            "    err = cdr_need_read(len, offset, 1);\n    if (err) {{ return err; }}\n"
+        );
+        let _ = writeln!(
+            out,
+            "    {parent}->has_{name} = (src[offset++] != 0) ? 1 : 0;",
+            parent = parent,
+            name = escaped
+        );
+        let _ = writeln!(
+            out,
+            "    if ({parent}->has_{name}) {{",
+            parent = parent,
+            name = escaped
+        );
+        out.push_str(&emit_decode_type(
+            "        ",
+            &f.field_type,
+            idx,
+            &value_expr,
+            &ptr_expr,
+            &escaped,
+            c_std,
+        ));
+        out.push_str("    }\n");
+        out
+    } else {
+        emit_decode_type(
+            "    ",
+            &f.field_type,
+            idx,
+            &value_expr,
+            &ptr_expr,
+            &escaped,
+            c_std,
+        )
+    }
 }
 
 fn emit_decode_type(

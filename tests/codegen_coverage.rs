@@ -207,6 +207,27 @@ fn c_union_tagged() {
     );
 }
 
+#[test]
+fn c_optional() {
+    let out = gen(Backend::C, "struct S { @optional int32_t maybe; };");
+    assert!(
+        out.contains("uint8_t has_maybe;"),
+        "missing has_maybe flag in struct: {out}"
+    );
+    assert!(
+        out.contains("has_maybe ? 0x01 : 0x00"),
+        "missing presence flag encode: {out}"
+    );
+    assert!(
+        out.contains("has_maybe = (src[offset++] != 0)"),
+        "missing presence flag decode: {out}"
+    );
+    assert!(
+        out.contains("offset += 1;"),
+        "missing presence flag in max_size: {out}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // C++ backend
 // ---------------------------------------------------------------------------

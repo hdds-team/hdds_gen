@@ -18,7 +18,19 @@ pub(super) fn emit_max_field(f: &Field, idx: &DefinitionIndex, parent: &str) -> 
     let escaped = c_ident(&f.name);
     let value_expr = format!("{}->{}", parent, escaped);
     let ptr_expr = format!("&({})", value_expr);
-    emit_max_type("    ", &f.field_type, idx, &value_expr, &ptr_expr, &escaped)
+    let mut out = String::new();
+    if f.is_optional() {
+        out.push_str("    offset += 1; /* optional presence flag */\n");
+    }
+    out.push_str(&emit_max_type(
+        "    ",
+        &f.field_type,
+        idx,
+        &value_expr,
+        &ptr_expr,
+        &escaped,
+    ));
+    out
 }
 
 pub(super) fn label_to_c(discr: &IdlType, label: &str) -> String {

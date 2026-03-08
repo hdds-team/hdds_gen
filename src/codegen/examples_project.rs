@@ -1104,17 +1104,16 @@ import time
 
 from {module_name} import {import_path}
 
-# TODO: Import hdds
+# Uncomment when hdds Python bindings are available:
 # import hdds
 
 def main():
     print(f"Starting {struct_name} Publisher...")
 
-    # TODO: Initialize DDS
-    # participant = hdds.DomainParticipant(0)
-    # topic = participant.create_topic("{struct_name}Topic", {import_path})
+    # Uncomment to enable DDS transport:
+    # participant = hdds.Participant("{struct_name}_pub", domain_id=0)
     # publisher = participant.create_publisher()
-    # writer = publisher.create_datawriter(topic)
+    # writer = publisher.create_writer("{struct_name}Topic")
 
     sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 
@@ -1126,8 +1125,8 @@ def main():
         encoded = msg.encode_cdr2_le()
         print(f"[SEND] Sample {{i + 1}}/{{sample_count}} ({{len(encoded)}} bytes)")
 
-        # TODO: Publish via DDS
-        # writer.write(msg)
+        # Uncomment to publish via DDS:
+        # writer.write(encoded)
 
         time.sleep(1)
 
@@ -1154,17 +1153,16 @@ import time
 
 from {module_name} import {import_path}
 
-# TODO: Import hdds
+# Uncomment when hdds Python bindings are available:
 # import hdds
 
 def main():
     print(f"Starting {struct_name} Subscriber...")
 
-    # TODO: Initialize DDS
-    # participant = hdds.DomainParticipant(0)
-    # topic = participant.create_topic("{struct_name}Topic", {import_path})
+    # Uncomment to enable DDS transport:
+    # participant = hdds.Participant("{struct_name}_sub", domain_id=0)
     # subscriber = participant.create_subscriber()
-    # reader = subscriber.create_datareader(topic)
+    # reader = subscriber.create_reader("{struct_name}Topic")
 
     sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
     print(f"Waiting for {{sample_count}} samples...")
@@ -1173,9 +1171,10 @@ def main():
     ticks = 0
 
     while received < sample_count:
-        # TODO: Read via DDS
-        # msg = reader.take()
-        # if msg:
+        # Uncomment to read via DDS:
+        # data = reader.take()
+        # if data:
+        #     msg = {import_path}.decode_cdr2_le(data)
         #     print(f"[RECV] Sample {{received + 1}}")
         #     received += 1
 

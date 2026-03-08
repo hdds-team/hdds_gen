@@ -41,6 +41,12 @@ impl CGenerator {
 
         for f in &s.fields {
             let escaped = c_ident(&f.name);
+            if f.is_optional() {
+                push_fmt(
+                    &mut out,
+                    format_args!("{}    uint8_t has_{};\n", self.indent(), escaped),
+                );
+            }
             if let IdlType::Array { inner, size } = &f.field_type {
                 let base = Self::type_to_c(inner);
                 push_fmt(

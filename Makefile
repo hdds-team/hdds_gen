@@ -3,7 +3,7 @@
 # Makefile for IDL Parser (Rust)
 # Provides convenient shortcuts for common tasks
 
-.PHONY: all build release test test-all test-prod clean dist install run help fmt clippy doc
+.PHONY: all build release test test-all test-prod test-roundtrip clean dist install run help fmt clippy doc
 .PHONY: validate-ci
 
 # Default target
@@ -31,6 +31,11 @@ test-all: build
 
 # Alias for test-all
 test-prod: test-all
+
+# Cross-language CDR2 roundtrip test (Python, C, C++)
+test-roundtrip: release
+	@echo "🔄 Running codegen roundtrip test..."
+	@./scripts/test-codegen-roundtrip.sh
 
 # Run tests with coverage (requires cargo-tarpaulin)
 test-coverage:
