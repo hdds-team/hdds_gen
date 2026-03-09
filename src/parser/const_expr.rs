@@ -56,25 +56,25 @@ impl ConstValue {
         }
     }
 
-    pub(super) fn as_int(&self) -> Result<i64> {
+    pub(super) fn as_int(&self, pos: Position) -> Result<i64> {
         match self {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),
             _ => Err(ParseError::new(
                 ErrorKind::InvalidSyntax,
-                Position::new(0, 0),
+                pos,
                 "Expected integer",
             )),
         }
     }
 
-    pub(super) fn unary_neg(self) -> Result<Self> {
+    pub(super) fn unary_neg(self, pos: Position) -> Result<Self> {
         match self {
             Self::Int(i) => Ok(Self::Int(-i)),
             Self::Float(f) => Ok(Self::Float(-f)),
             _ => Err(ParseError::new(
                 ErrorKind::InvalidSyntax,
-                Position::new(0, 0),
+                pos,
                 "Invalid unary -",
             )),
         }
@@ -85,91 +85,65 @@ impl ConstValue {
         Self::Bool(!self.truthy())
     }
 
-    pub(super) fn apply_binary(self, op: &Op, rhs: Self) -> Result<Self> {
+    pub(super) fn apply_binary(self, op: &Op, rhs: Self, pos: Position) -> Result<Self> {
+        let err = |msg: &str| Err(ParseError::new(ErrorKind::InvalidSyntax, pos, msg));
+
         match op {
             Op::Add => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a + b)),
+                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_add(b))),
                 (Self::Float(a), Self::Float(b)) => Ok(Self::Float(a + b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "+ expects numbers",
-                )),
+                _ => err("+ expects numbers"),
             },
             Op::Sub => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a - b)),
+                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_sub(b))),
                 (Self::Float(a), Self::Float(b)) => Ok(Self::Float(a - b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "- expects numbers",
-                )),
+                _ => err("- expects numbers"),
             },
             Op::Mul => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a * b)),
+                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_mul(b))),
                 (Self::Float(a), Self::Float(b)) => Ok(Self::Float(a * b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "* expects numbers",
-                )),
+                _ => err("* expects numbers"),
             },
             Op::Div => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a / b)),
+                (Self::Int(_, ), Self::Int(0)) => err("Division by zero"),
+                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_div(b))),
                 (Self::Float(a), Self::Float(b)) => Ok(Self::Float(a / b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "/ expects numbers",
-                )),
+                _ => err("/ expects numbers"),
             },
             Op::Mod => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a % b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "% expects integers",
-                )),
+                (Self::Int(_), Self::Int(0)) => err("Modulo by zero"),
+                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_rem(b))),
+                _ => err("% expects integers"),
             },
             Op::Shl => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a << b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "<< expects integers",
-                )),
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                (Self::Int(a), Self::Int(b)) if (0..64).contains(&b) => {
+                    // Safety: b is in 0..64, fits in u32 without truncation or sign loss
+                    Ok(Self::Int(a.wrapping_shl(b as u32)))
+                }
+                (Self::Int(_), Self::Int(_)) => err("Shift amount out of range (0..63)"),
+                _ => err("<< expects integers"),
             },
             Op::Shr => match (self, rhs) {
-                (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a >> b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    ">> expects integers",
-                )),
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                (Self::Int(a), Self::Int(b)) if (0..64).contains(&b) => {
+                    // Safety: b is in 0..64, fits in u32 without truncation or sign loss
+                    Ok(Self::Int(a.wrapping_shr(b as u32)))
+                }
+                (Self::Int(_), Self::Int(_)) => err("Shift amount out of range (0..63)"),
+                _ => err(">> expects integers"),
             },
             Op::BitAnd => match (self, rhs) {
                 (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a & b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "& expects integers",
-                )),
+                _ => err("& expects integers"),
             },
             Op::BitOr => match (self, rhs) {
                 (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a | b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "| expects integers",
-                )),
+                _ => err("| expects integers"),
             },
             Op::BitXor => match (self, rhs) {
                 (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a ^ b)),
-                _ => Err(ParseError::new(
-                    ErrorKind::InvalidSyntax,
-                    Position::new(0, 0),
-                    "^ expects integers",
-                )),
+                _ => err("^ expects integers"),
             },
             Op::LAnd => Ok(Self::Bool(self.truthy() && rhs.truthy())),
             Op::LOr => Ok(Self::Bool(self.truthy() || rhs.truthy())),
@@ -201,10 +175,11 @@ impl Parser {
             if prec < min_prec {
                 break;
             }
+            let op_pos = self.current_position();
             self.advance();
             let next_min = if right_assoc { prec } else { prec + 1 };
             let rhs = self.parse_const_expression(next_min)?;
-            lhs = lhs.apply_binary(&op, rhs)?;
+            lhs = lhs.apply_binary(&op, rhs, op_pos)?;
         }
         Ok(lhs)
     }
@@ -213,8 +188,9 @@ impl Parser {
         match self.peek() {
             TokenKind::Minus => {
                 self.advance();
+                let pos = self.current_position();
                 let v = self.parse_const_unary()?;
-                v.unary_neg()
+                v.unary_neg(pos)
             }
             TokenKind::Plus => {
                 self.advance();

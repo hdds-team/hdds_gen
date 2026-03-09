@@ -186,7 +186,7 @@ pub fn preprocess_content(
 
             match directive {
                 "define" => {
-                    if !arg.is_empty() {
+                    if !arg.is_empty() && stack_active(&if_stack) {
                         let mut parts = arg.splitn(2, char::is_whitespace);
                         let name = parts.next().unwrap_or("").trim().to_string();
                         let value = parts.next().unwrap_or("").trim().to_string();

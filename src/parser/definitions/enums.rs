@@ -45,7 +45,7 @@ impl Parser {
             let value = if self.check(&TokenKind::Equal) {
                 self.advance();
                 match self.parse_const_expression(0) {
-                    Ok(cv) => match cv.as_int() {
+                    Ok(cv) => match cv.as_int(self.current_position()) {
                         Ok(i) => Some(i),
                         Err(_) => {
                             return Err(ParseError::new(

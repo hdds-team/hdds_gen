@@ -135,7 +135,7 @@ impl Parser {
                         format!("Unknown constant '{name}' used as {context}"),
                     )
                 })?;
-                let int_val = val.as_int().map_err(|_| {
+                let int_val = val.as_int(pos).map_err(|_| {
                     ParseError::new(
                         ErrorKind::InvalidSyntax,
                         pos,
