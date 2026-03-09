@@ -33,7 +33,14 @@ impl Parser {
 
         self.expect(&TokenKind::Semicolon, "Expected ';' after const")?;
 
-        self.const_env.insert(name.clone(), evaluated);
+        // Store under short name (for unqualified lookups within same scope)
+        self.const_env.insert(name.clone(), evaluated.clone());
+
+        // Also store under FQN (for qualified lookups like my_mod::my_const)
+        if !self.scope_stack.is_empty() {
+            let fqn = format!("{}::{name}", self.scope_stack.join("::"));
+            self.const_env.insert(fqn, evaluated);
+        }
 
         Ok(Const::new(name, const_type, value))
     }

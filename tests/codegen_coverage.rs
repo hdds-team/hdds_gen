@@ -3,6 +3,13 @@
 
 //! Integration tests for code generation backends.
 
+#![allow(
+    clippy::expect_used,
+    clippy::needless_raw_string_hashes,
+    clippy::needless_pass_by_value,
+    clippy::single_char_pattern
+)]
+
 use hddsgen::{Backend, Parser};
 
 fn parse(idl: &str) -> hddsgen::IdlFile {

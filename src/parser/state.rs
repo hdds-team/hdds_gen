@@ -20,6 +20,8 @@ pub struct Parser {
     pub(super) tokens: Vec<Token>,
     pub(super) current: usize,
     pub(super) const_env: HashMap<String, ConstValue>,
+    /// Module scope stack for FQN resolution (e.g., `["my_mod", "inner"]`)
+    pub(super) scope_stack: Vec<String>,
 }
 
 impl Parser {
@@ -41,6 +43,7 @@ impl Parser {
             tokens,
             current: 0,
             const_env: HashMap::default(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -61,6 +64,7 @@ impl Parser {
             tokens,
             current: 0,
             const_env: HashMap::default(),
+            scope_stack: Vec::new(),
         })
     }
 
@@ -80,6 +84,7 @@ impl Parser {
             tokens,
             current: 0,
             const_env: HashMap::default(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -126,20 +131,35 @@ impl Parser {
                 Self::literal_u32(raw, pos, context)
             }
             TokenKind::Identifier(name) => {
-                let name = name.clone();
+                let mut id = name.clone();
                 self.advance();
-                let val = self.const_env.get(&name).ok_or_else(|| {
+                // Handle scoped identifiers (e.g., limits::MAX_LEN)
+                while self.check(&TokenKind::DoubleColon) {
+                    self.advance(); // consume ::
+                    if let TokenKind::Identifier(next) = self.peek() {
+                        id.push_str("::");
+                        id.push_str(next);
+                        self.advance();
+                    } else {
+                        return Err(ParseError::new(
+                            ErrorKind::InvalidSyntax,
+                            self.current_position(),
+                            format!("Expected identifier after '::' in {context}"),
+                        ));
+                    }
+                }
+                let val = self.const_env.get(&id).ok_or_else(|| {
                     ParseError::new(
                         ErrorKind::InvalidSyntax,
                         pos,
-                        format!("Unknown constant '{name}' used as {context}"),
+                        format!("Unknown constant '{id}' used as {context}"),
                     )
                 })?;
                 let int_val = val.as_int(pos).map_err(|_| {
                     ParseError::new(
                         ErrorKind::InvalidSyntax,
                         pos,
-                        format!("Constant '{name}' is not an integer"),
+                        format!("Constant '{id}' is not an integer"),
                     )
                 })?;
                 Self::literal_u32(int_val, pos, context)

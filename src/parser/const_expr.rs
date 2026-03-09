@@ -116,19 +116,19 @@ impl ConstValue {
                 _ => err("% expects integers"),
             },
             Op::Shl => match (self, rhs) {
+                // @audit-ok: b is validated to be in 0..64 by guard, cast is safe
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 (Self::Int(a), Self::Int(b)) if (0..64).contains(&b) => {
-                    // Safety: b is in 0..64, fits in u32 without truncation or sign loss
-                    Ok(Self::Int(a.wrapping_shl(b as u32)))
+                    Ok(Self::Int(a.wrapping_shl(b as u32))) // SAFETY: b is in 0..64 per guard
                 }
                 (Self::Int(_), Self::Int(_)) => err("Shift amount out of range (0..63)"),
                 _ => err("<< expects integers"),
             },
             Op::Shr => match (self, rhs) {
+                // @audit-ok: b is validated to be in 0..64 by guard, cast is safe
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 (Self::Int(a), Self::Int(b)) if (0..64).contains(&b) => {
-                    // Safety: b is in 0..64, fits in u32 without truncation or sign loss
-                    Ok(Self::Int(a.wrapping_shr(b as u32)))
+                    Ok(Self::Int(a.wrapping_shr(b as u32))) // SAFETY: b is in 0..64 per guard
                 }
                 (Self::Int(_), Self::Int(_)) => err("Shift amount out of range (0..63)"),
                 _ => err(">> expects integers"),
@@ -229,12 +229,28 @@ impl Parser {
                 Ok(v)
             }
             TokenKind::Identifier(name) => {
-                let id = name.clone();
+                let mut id = name.clone();
+                let pos = self.current_position();
                 self.advance();
+                // Handle scoped identifiers (e.g., my_mod::my_const)
+                while self.check(&TokenKind::DoubleColon) {
+                    self.advance(); // consume ::
+                    if let TokenKind::Identifier(next) = self.peek() {
+                        id.push_str("::");
+                        id.push_str(next);
+                        self.advance();
+                    } else {
+                        return Err(ParseError::new(
+                            ErrorKind::InvalidSyntax,
+                            self.current_position(),
+                            "Expected identifier after '::'",
+                        ));
+                    }
+                }
                 self.const_env.get(&id).cloned().ok_or_else(|| {
                     ParseError::new(
                         ErrorKind::InvalidSyntax,
-                        self.current_position(),
+                        pos,
                         format!("Unknown identifier in const expression: {id}"),
                     )
                 })

@@ -30,7 +30,10 @@ impl Parser {
 
         self.expect(&TokenKind::LeftBrace, "Expected '{' after module name")?;
 
-        let mut module = Module::new(name);
+        let mut module = Module::new(name.clone());
+
+        // Push module scope for FQN resolution of constants
+        self.scope_stack.push(name);
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
             if matches!(
@@ -73,6 +76,9 @@ impl Parser {
 
         self.expect(&TokenKind::RightBrace, "Expected '}' after module body")?;
         self.expect(&TokenKind::Semicolon, "Expected ';' after module")?;
+
+        // Pop module scope
+        self.scope_stack.pop();
 
         Ok(module)
     }

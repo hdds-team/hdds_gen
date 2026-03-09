@@ -371,6 +371,7 @@ impl PythonGenerator {
                     IdlType::Primitive(_) => " = 0".to_string(),
                     IdlType::Named(nm) => {
                         let type_ident = Self::last_ident(nm);
+                        #[allow(clippy::option_if_let_else)]
                         if let Some(td) = idx.typedefs.get(&type_ident) {
                             // Resolve typedef to get default
                             match &td.base_type {
@@ -2104,14 +2105,14 @@ impl PythonGenerator {
             format_args!("{}\"\"\"Tagged union for {}\"\"\"\n", self.indent(), u.name),
         );
         // Compute default discriminator value
+        #[allow(clippy::option_if_let_else)]
         let disc_default = if let IdlType::Named(nm) = &u.discriminator {
             let enum_ident = Self::last_ident(nm);
             if let Some(e) = idx.enums.get(&enum_ident) {
-                if let Some(first) = e.variants.first() {
-                    format!(" = {enum_ident}.{}", first.name)
-                } else {
-                    " = 0".to_string()
-                }
+                e.variants.first().map_or_else(
+                    || " = 0".to_string(),
+                    |first| format!(" = {enum_ident}.{}", first.name),
+                )
             } else {
                 " = 0".to_string()
             }
@@ -3317,21 +3318,14 @@ mod tests {
     fn python_dataclass_field_order_defaults_last() -> TestResult<()> {
         let mut file = IdlFile::new();
         // struct Message {
-        //     sequence<int32> items;    // HAS default (default_factory=list)
-        //     SenderType from_type;     // NO default (enum)
-        //     int32 id;                 // NO default
-        //     string label;             // HAS default ("")
+        //     sequence<int32> items;    // default: field(default_factory=list)
+        //     SenderType from_type;     // default: 0 (enum)
+        //     int32 id;                 // default: 0
+        //     string label;             // default: ""
         // };
         //
-        // Without reordering, Python would fail with:
-        //   items: List[int] = field(default_factory=list)
-        //   from_type: SenderType      # ERROR: non-default follows default!
-        //
-        // Correct order should be:
-        //   from_type: SenderType
-        //   id: int
-        //   items: List[int] = field(default_factory=list)
-        //   label: str = ""
+        // All fields get defaults so IDL order is preserved (critical for CDR).
+        // Python dataclass won't complain because every field has a default.
 
         // First, define an enum
         let mut e = Enum::new("SenderType");
@@ -3339,9 +3333,9 @@ mod tests {
         e.add_variant(EnumVariant::new("SYSTEM", None));
         file.add_definition(Definition::Enum(e));
 
-        // Then define the struct with problematic field order
+        // Then define the struct with mixed field types
         let mut s = Struct::new("Message");
-        // IDL order: sequence first, then enum, then int32, then string
+        // IDL order: sequence, enum, int32, string
         s.add_field(Field::new(
             "items",
             IdlType::Sequence {
@@ -3369,28 +3363,41 @@ mod tests {
             .unwrap_or(code.len() - class_start);
         let class_def = &code[class_start..class_start + class_end];
 
-        // Get field line positions
+        // IDL field order must be preserved (CDR serialization depends on it)
+        let items_pos = class_def.find("items:").expect("items field");
         let from_type_pos = class_def.find("from_type:").expect("from_type field");
         let id_pos = class_def.find("id:").expect("id field");
-        let items_pos = class_def.find("items:").expect("items field");
         let label_pos = class_def.find("label:").expect("label field");
 
-        // Fields WITHOUT defaults must come BEFORE fields WITH defaults
         assert!(
-            from_type_pos < items_pos,
-            "from_type (no default) must come before items (has default)"
+            items_pos < from_type_pos,
+            "IDL order: items before from_type"
         );
         assert!(
-            id_pos < items_pos,
-            "id (no default) must come before items (has default)"
-        );
-        assert!(
-            from_type_pos < label_pos,
-            "from_type (no default) must come before label (has default)"
+            from_type_pos < id_pos,
+            "IDL order: from_type before id"
         );
         assert!(
             id_pos < label_pos,
-            "id (no default) must come before label (has default)"
+            "IDL order: id before label"
+        );
+
+        // All fields must have defaults (so dataclass order doesn't matter)
+        assert!(
+            class_def.contains("items: List[int] = field(default_factory=list)"),
+            "items must have default_factory=list"
+        );
+        assert!(
+            class_def.contains("from_type: SenderType = 0"),
+            "from_type (enum) must have default = 0"
+        );
+        assert!(
+            class_def.contains("id: int = 0"),
+            "id must have default = 0"
+        );
+        assert!(
+            class_def.contains("label: str = \"\""),
+            "label must have default = \"\""
         );
 
         Ok(())

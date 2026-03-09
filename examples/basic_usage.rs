@@ -8,6 +8,7 @@
 use hddsgen::{Definition, Parser};
 use std::fs;
 
+#[allow(clippy::expect_used)]
 fn main() {
     println!("=== IDL Parser Example ===\n");
 

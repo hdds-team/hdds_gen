@@ -11,10 +11,6 @@ use crate::ast::{Field, Struct};
 use crate::types::{Annotation, IdlType, PrimitiveType};
 
 impl RustGenerator {
-    pub(super) fn generate_struct(&self, s: &Struct) -> String {
-        self.generate_struct_with_module(s, None)
-    }
-
     pub(super) fn generate_struct_with_module(
         &self,
         s: &Struct,

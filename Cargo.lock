@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "hddsgen"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "clap",
  "encoding_rs",

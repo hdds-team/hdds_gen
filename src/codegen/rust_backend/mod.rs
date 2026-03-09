@@ -138,85 +138,94 @@ impl CodeGenerator for RustGenerator {
             output.push('\n');
         }
 
-        // Generate definitions
-        for def in &ast.definitions {
+        // Generate definitions (recursive for nested modules)
+        self.generate_definitions(&mut output, &ast.definitions, &[], "");
+
+        Ok(output)
+    }
+}
+
+impl RustGenerator {
+    /// Recursively generate code for a list of definitions.
+    ///
+    /// `module_path` tracks the current module nesting (e.g., `["my_mod", "inner"]`)
+    /// for FQN generation. `indent` is the current indentation prefix.
+    fn generate_definitions(
+        &self,
+        output: &mut String,
+        definitions: &[Definition],
+        module_path: &[&str],
+        indent: &str,
+    ) {
+        // Build FQN prefix for struct type names (e.g., "my_mod::inner::")
+        let module_name = if module_path.is_empty() {
+            None
+        } else {
+            Some(module_path.join("::"))
+        };
+
+        for def in definitions {
             match def {
                 Definition::Module(m) => {
-                    push_fmt(
-                        &mut output,
-                        format_args!("pub mod {name} {{\n", name = m.name), // Use original module name (not lowercase)
-                    );
-                    output.push_str("    use super::*;\n\n");
-                    for inner_def in &m.definitions {
-                        match inner_def {
-                            Definition::Struct(s) => {
-                                // Pass module name for FQN generation
-                                push_fmt(
-                                    &mut output,
-                                    format_args!(
-                                        "    {}",
-                                        self.generate_struct_with_module(s, Some(&m.name))
-                                            .replace('\n', "\n    ")
-                                    ),
-                                );
-                            }
-                            Definition::Enum(e) => {
-                                push_fmt(
-                                    &mut output,
-                                    format_args!(
-                                        "    {}",
-                                        self.generate_enum(e).replace('\n', "\n    ")
-                                    ),
-                                );
-                            }
-                            Definition::Typedef(t) => {
-                                push_fmt(
-                                    &mut output,
-                                    format_args!("    {}", self.generate_typedef(t)),
-                                );
-                            }
-                            Definition::Union(u) => {
-                                push_fmt(
-                                    &mut output,
-                                    format_args!(
-                                        "    {}",
-                                        self.generate_union(u).replace('\n', "\n    ")
-                                    ),
-                                );
-                            }
-                            Definition::Bitset(b) => {
-                                push_fmt(
-                                    &mut output,
-                                    format_args!(
-                                        "    {}",
-                                        self.generate_bitset(b).replace('\n', "\n    ")
-                                    ),
-                                );
-                            }
-                            Definition::Bitmask(m) => {
-                                push_fmt(
-                                    &mut output,
-                                    format_args!(
-                                        "    {}",
-                                        self.generate_bitmask(m).replace('\n', "\n    ")
-                                    ),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                    output.push_str("}\n\n");
+                    push_fmt(output, format_args!("{indent}pub mod {name} {{\n", name = m.name));
+                    push_fmt(output, format_args!("{indent}    use super::*;\n\n"));
+                    // Recurse into nested module
+                    let mut nested_path: Vec<&str> = module_path.to_vec();
+                    nested_path.push(&m.name);
+                    let nested_indent = format!("{indent}    ");
+                    self.generate_definitions(output, &m.definitions, &nested_path, &nested_indent);
+                    push_fmt(output, format_args!("{indent}}}\n\n"));
                 }
-                Definition::Struct(s) => output.push_str(&self.generate_struct(s)),
-                Definition::Enum(e) => output.push_str(&self.generate_enum(e)),
-                Definition::Typedef(t) => output.push_str(&self.generate_typedef(t)),
-                Definition::Union(u) => output.push_str(&self.generate_union(u)),
-                Definition::Bitset(b) => output.push_str(&self.generate_bitset(b)),
-                Definition::Bitmask(m) => output.push_str(&self.generate_bitmask(m)),
+                Definition::Struct(s) => {
+                    let code = self.generate_struct_with_module(s, module_name.as_deref());
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                    }
+                }
+                Definition::Enum(e) => {
+                    let code = self.generate_enum(e);
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                    }
+                }
+                Definition::Typedef(t) => {
+                    let code = self.generate_typedef(t);
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{code}"));
+                    }
+                }
+                Definition::Union(u) => {
+                    let code = self.generate_union(u);
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                    }
+                }
+                Definition::Bitset(b) => {
+                    let code = self.generate_bitset(b);
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                    }
+                }
+                Definition::Bitmask(bm) => {
+                    let code = self.generate_bitmask(bm);
+                    if indent.is_empty() {
+                        output.push_str(&code);
+                    } else {
+                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                    }
+                }
                 _ => {}
             }
         }
-
-        Ok(output)
     }
 }

@@ -3,6 +3,8 @@
 
 //! Supplemental unit tests covering parser, lexer, validator, and pretty-printer gaps.
 
+#![allow(clippy::expect_used, clippy::panic, clippy::needless_raw_string_hashes)]
+
 use crate::ast::Definition;
 use crate::parser::Parser;
 use crate::pretty::to_idl;
