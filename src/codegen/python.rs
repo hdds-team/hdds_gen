@@ -343,7 +343,7 @@ impl PythonGenerator {
         // Python dataclasses require this ordering, otherwise we get:
         // "TypeError: non-default argument follows default argument"
         // All fields get defaults so dataclass ordering doesn't matter
-        for f in s.fields.iter() {
+        for f in &s.fields {
             let is_opt = f.is_optional();
             let mut ty = Self::type_to_python(&f.field_type);
             let default_suffix = if is_opt {
@@ -463,7 +463,7 @@ impl PythonGenerator {
         push_fmt(&mut out, format_args!("{}offset = 0\n", indent2));
 
         for f in &s.fields {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if f.is_optional() {
                 // Optional field: write presence flag first
                 push_fmt(
@@ -472,7 +472,7 @@ impl PythonGenerator {
                 );
                 push_fmt(
                     &mut out,
-                    format_args!("{}if self.{} is None:\n", indent2, ident),
+                    format_args!("{}if self.{} is None:\n", indent2, field_id),
                 );
                 push_fmt(
                     &mut out,
@@ -486,11 +486,11 @@ impl PythonGenerator {
                 );
                 push_fmt(&mut out, format_args!("{}offset += 1\n", indent3));
                 // Encode the value with extra indentation
-                let field_code = Self::emit_encode_field(&ident, &f.field_type, idx, &indent3);
+                let field_code = Self::emit_encode_field(&field_id, &f.field_type, idx, &indent3);
                 out.push_str(&field_code);
             } else {
                 out.push_str(&Self::emit_encode_field(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -533,7 +533,7 @@ impl PythonGenerator {
         );
 
         for f in &s.fields {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if f.is_optional() {
                 // Optional field: write presence flag first
                 push_fmt(
@@ -542,7 +542,7 @@ impl PythonGenerator {
                 );
                 push_fmt(
                     &mut out,
-                    format_args!("{}if self.{} is None:\n", indent2, ident),
+                    format_args!("{}if self.{} is None:\n", indent2, field_id),
                 );
                 push_fmt(
                     &mut out,
@@ -556,11 +556,11 @@ impl PythonGenerator {
                 );
                 push_fmt(&mut out, format_args!("{}offset += 1\n", indent3));
                 // Encode the value with extra indentation
-                let field_code = Self::emit_encode_field(&ident, &f.field_type, idx, &indent3);
+                let field_code = Self::emit_encode_field(&field_id, &f.field_type, idx, &indent3);
                 out.push_str(&field_code);
             } else {
                 out.push_str(&Self::emit_encode_field(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -614,7 +614,7 @@ impl PythonGenerator {
         );
 
         for (field_idx, f) in s.fields.iter().enumerate() {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             let member_id = compute_member_id(s, field_idx, f);
             let fixed_size = Self::primitive_fixed_size(&f.field_type);
             let lc = get_lc_for_size(fixed_size);
@@ -661,7 +661,7 @@ impl PythonGenerator {
 
                 // Encode field into field_parts
                 out.push_str(&Self::emit_encode_field_to_var(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -692,7 +692,7 @@ impl PythonGenerator {
             } else {
                 // Fixed size: encode directly after EMHEADER (no NEXTINT)
                 out.push_str(&Self::emit_encode_field(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -1058,7 +1058,7 @@ impl PythonGenerator {
                     push_fmt(&mut out, format_args!("{indent}offset += len(_sub)\n"));
                 }
             }
-            _ => {}
+            IdlType::Map { .. } => {}
         }
         out
     }
@@ -1099,7 +1099,7 @@ impl PythonGenerator {
 
         // Decode fields
         for f in &s.fields {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if f.is_optional() {
                 // Optional field: read presence flag first
                 push_fmt(
@@ -1111,18 +1111,18 @@ impl PythonGenerator {
                 );
                 push_fmt(
                     &mut out,
-                    format_args!("{}_has_{} = data[offset] != 0\n", indent2, ident),
+                    format_args!("{}_has_{} = data[offset] != 0\n", indent2, field_id),
                 );
                 push_fmt(&mut out, format_args!("{}offset += 1\n", indent2));
-                push_fmt(&mut out, format_args!("{}if _has_{}:\n", indent2, ident));
+                push_fmt(&mut out, format_args!("{}if _has_{}:\n", indent2, field_id));
                 // Decode the value with extra indentation
-                let field_code = Self::emit_decode_field(&ident, &f.field_type, idx, &indent3);
+                let field_code = Self::emit_decode_field(&field_id, &f.field_type, idx, &indent3);
                 out.push_str(&field_code);
                 push_fmt(&mut out, format_args!("{}else:\n", indent2));
-                push_fmt(&mut out, format_args!("{}_{} = None\n", indent3, ident));
+                push_fmt(&mut out, format_args!("{}_{} = None\n", indent3, field_id));
             } else {
                 out.push_str(&Self::emit_decode_field(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -1133,11 +1133,11 @@ impl PythonGenerator {
         // Create instance
         push_fmt(&mut out, format_args!("{}return cls(", indent2));
         for (i, f) in s.fields.iter().enumerate() {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if i > 0 {
                 out.push_str(", ");
             }
-            push_fmt(&mut out, format_args!("{}=_{}", ident, ident));
+            push_fmt(&mut out, format_args!("{}=_{}", field_id, field_id));
         }
         out.push_str("), offset\n");
         out
@@ -1187,7 +1187,7 @@ impl PythonGenerator {
 
         // Decode fields
         for f in &s.fields {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if f.is_optional() {
                 // Optional field: read presence flag first
                 push_fmt(
@@ -1199,18 +1199,18 @@ impl PythonGenerator {
                 );
                 push_fmt(
                     &mut out,
-                    format_args!("{}_has_{} = data[offset] != 0\n", indent2, ident),
+                    format_args!("{}_has_{} = data[offset] != 0\n", indent2, field_id),
                 );
                 push_fmt(&mut out, format_args!("{}offset += 1\n", indent2));
-                push_fmt(&mut out, format_args!("{}if _has_{}:\n", indent2, ident));
+                push_fmt(&mut out, format_args!("{}if _has_{}:\n", indent2, field_id));
                 // Decode the value with extra indentation
-                let field_code = Self::emit_decode_field(&ident, &f.field_type, idx, &indent3);
+                let field_code = Self::emit_decode_field(&field_id, &f.field_type, idx, &indent3);
                 out.push_str(&field_code);
                 push_fmt(&mut out, format_args!("{}else:\n", indent2));
-                push_fmt(&mut out, format_args!("{}_{} = None\n", indent3, ident));
+                push_fmt(&mut out, format_args!("{}_{} = None\n", indent3, field_id));
             } else {
                 out.push_str(&Self::emit_decode_field(
-                    &ident,
+                    &field_id,
                     &f.field_type,
                     idx,
                     &indent2,
@@ -1221,11 +1221,11 @@ impl PythonGenerator {
         // Create instance
         push_fmt(&mut out, format_args!("{}return cls(", indent2));
         for (i, f) in s.fields.iter().enumerate() {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if i > 0 {
                 out.push_str(", ");
             }
-            push_fmt(&mut out, format_args!("{}=_{}", ident, ident));
+            push_fmt(&mut out, format_args!("{}=_{}", field_id, field_id));
         }
         out.push_str("), _payload_end\n");
         out
@@ -1280,11 +1280,11 @@ impl PythonGenerator {
             format_args!("{}# Initialize fields with default values\n", indent2),
         );
         for f in &s.fields {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             let default = Self::get_default_value(&f.field_type);
             push_fmt(
                 &mut out,
-                format_args!("{}_{} = {}\n", indent2, ident, default),
+                format_args!("{}_{} = {}\n", indent2, field_id, default),
             );
         }
 
@@ -1352,7 +1352,7 @@ impl PythonGenerator {
         push_fmt(&mut out, format_args!("{}_field_start = offset\n", indent3));
         let mut first = true;
         for (field_idx, f) in s.fields.iter().enumerate() {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             let member_id = compute_member_id(s, field_idx, f);
             let keyword = if first { "if" } else { "elif" };
             first = false;
@@ -1366,7 +1366,7 @@ impl PythonGenerator {
             );
             let indent4 = format!("{}    ", indent3);
             out.push_str(&Self::emit_decode_field(
-                &ident,
+                &field_id,
                 &f.field_type,
                 idx,
                 &indent4,
@@ -1386,11 +1386,11 @@ impl PythonGenerator {
         // Create instance
         push_fmt(&mut out, format_args!("{}return cls(", indent2));
         for (i, f) in s.fields.iter().enumerate() {
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             if i > 0 {
                 out.push_str(", ");
             }
-            push_fmt(&mut out, format_args!("{}=_{}", ident, ident));
+            push_fmt(&mut out, format_args!("{}=_{}", field_id, field_id));
         }
         out.push_str("), _payload_end\n");
         out
@@ -1700,7 +1700,7 @@ impl PythonGenerator {
                     );
                 }
             }
-            _ => {}
+            IdlType::Map { .. } => {}
         }
         out
     }
@@ -2594,12 +2594,12 @@ impl PythonGenerator {
             let width = f.width;
             let mask = (1u64 << width) - 1;
 
-            let ident = python_ident(&f.name);
+            let field_id = python_ident(&f.name);
             // Getter property
             push_fmt(&mut out, format_args!("{}@property\n", indent));
             push_fmt(
                 &mut out,
-                format_args!("{}def {}(self) -> int:\n", indent, ident),
+                format_args!("{}def {}(self) -> int:\n", indent, field_id),
             );
             push_fmt(
                 &mut out,
@@ -2617,10 +2617,10 @@ impl PythonGenerator {
             );
 
             // Setter property
-            push_fmt(&mut out, format_args!("{}@{}.setter\n", indent, ident));
+            push_fmt(&mut out, format_args!("{}@{}.setter\n", indent, field_id));
             push_fmt(
                 &mut out,
-                format_args!("{}def {}(self, v: int) -> None:\n", indent, ident),
+                format_args!("{}def {}(self, v: int) -> None:\n", indent, field_id),
             );
             push_fmt(
                 &mut out,

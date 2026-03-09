@@ -864,7 +864,6 @@ impl MicroGenerator {
                 format!("            {}: {}::decode(dec)?,\n", name, type_name)
             }
             IdlType::Array { inner, size } => {
-                // For arrays, we need to decode element by element
                 let mut out = String::new();
                 Self::push_fmt(&mut out, format_args!("            {}: {{\n", name));
                 Self::push_fmt(
@@ -875,40 +874,16 @@ impl MicroGenerator {
                     ),
                 );
                 out.push_str("                for i in 0..arr.len() {\n");
-                match &**inner {
-                    IdlType::Primitive(p) => {
-                        let decode_call = Self::primitive_decode_call(p);
-                        Self::push_fmt(
-                            &mut out,
-                            format_args!("                    arr[i] = {}?;\n", decode_call),
-                        );
-                    }
-                    IdlType::Named(type_name) => {
-                        Self::push_fmt(
-                            &mut out,
-                            format_args!(
-                                "                    arr[i] = {}::decode(dec)?;\n",
-                                type_name
-                            ),
-                        );
-                    }
-                    _ => {
-                        out.push_str(
-                            "                    // complex array element: not yet supported\n",
-                        );
-                    }
-                }
+                Self::emit_element_decode(&mut out, inner, "arr[i] = ", "");
                 out.push_str("                }\n");
                 out.push_str("                arr\n");
                 out.push_str("            },\n");
                 out
             }
             IdlType::Sequence { inner, bound } => {
-                // Check if it's a bounded string (sequence<char, N>)
                 if **inner == IdlType::Primitive(PrimitiveType::Char) {
                     return format!("            {}: dec.decode_string()?,\n", name);
                 }
-                // Regular sequence - decode element by element
                 // @audit-ok: safe cast - config values are bounded by design (default: 32)
                 #[allow(clippy::cast_possible_truncation)]
                 let capacity = bound.unwrap_or(self.config.max_sequence_len as u32);
@@ -923,32 +898,11 @@ impl MicroGenerator {
                     ),
                 );
                 out.push_str("                for _ in 0..len {\n");
-                match &**inner {
-                    IdlType::Primitive(p) => {
-                        let decode_call = Self::primitive_decode_call(p);
-                        Self::push_fmt(
-                            &mut out,
-                            format_args!(
-                                "                    v.push({}?).map_err(|_| CdrError::BufferTooSmall)?;\n",
-                                decode_call
-                            ),
-                        );
-                    }
-                    IdlType::Named(type_name) => {
-                        Self::push_fmt(
-                            &mut out,
-                            format_args!(
-                                "                    v.push({}::decode(dec)?).map_err(|_| CdrError::BufferTooSmall)?;\n",
-                                type_name
-                            ),
-                        );
-                    }
-                    _ => {
-                        out.push_str(
-                            "                    // complex sequence element: not yet supported\n",
-                        );
-                    }
-                }
+                Self::emit_element_decode(
+                    &mut out, inner,
+                    "v.push(",
+                    ").map_err(|_| CdrError::BufferTooSmall)?",
+                );
                 out.push_str("                }\n");
                 out.push_str("                v\n");
                 out.push_str("            },\n");
@@ -959,6 +913,31 @@ impl MicroGenerator {
                     "            {}: Default::default(), // map not supported in no_std\n",
                     name
                 )
+            }
+        }
+    }
+
+    /// Emit a single element decode line (used by both Array and Sequence branches).
+    fn emit_element_decode(out: &mut String, inner: &IdlType, prefix: &str, suffix: &str) {
+        match inner {
+            IdlType::Primitive(p) => {
+                let call = Self::primitive_decode_call(p);
+                Self::push_fmt(
+                    out,
+                    format_args!("                    {}{}?{};\n", prefix, call, suffix),
+                );
+            }
+            IdlType::Named(type_name) => {
+                Self::push_fmt(
+                    out,
+                    format_args!(
+                        "                    {}{}::decode(dec)?{};\n",
+                        prefix, type_name, suffix
+                    ),
+                );
+            }
+            _ => {
+                out.push_str("                    // complex element: not yet supported\n");
             }
         }
     }

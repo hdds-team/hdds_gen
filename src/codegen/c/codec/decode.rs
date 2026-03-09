@@ -20,6 +20,13 @@ fn loop_var(depth: u32) -> &'static str {
     VARS.get(depth as usize).unwrap_or(&"n")
 }
 
+/// Groups the three field-related expressions to keep function signatures short.
+struct FieldExprs<'a> {
+    value: &'a str,
+    ptr: &'a str,
+    name: &'a str,
+}
+
 pub(super) fn emit_decode_field(
     f: &Field,
     idx: &DefinitionIndex,
@@ -48,29 +55,13 @@ pub(super) fn emit_decode_field(
             parent = parent,
             name = escaped
         );
-        out.push_str(&emit_decode_type(
-            "        ",
-            &f.field_type,
-            idx,
-            &value_expr,
-            &ptr_expr,
-            &escaped,
-            c_std,
-            0,
-        ));
+        let fe = FieldExprs { value: &value_expr, ptr: &ptr_expr, name: &escaped };
+        out.push_str(&emit_decode_type("        ", &f.field_type, idx, &fe, c_std, 0));
         out.push_str("    }\n");
         out
     } else {
-        emit_decode_type(
-            "    ",
-            &f.field_type,
-            idx,
-            &value_expr,
-            &ptr_expr,
-            &escaped,
-            c_std,
-            0,
-        )
+        let fe = FieldExprs { value: &value_expr, ptr: &ptr_expr, name: &escaped };
+        emit_decode_type("    ", &f.field_type, idx, &fe, c_std, 0)
     }
 }
 
@@ -78,13 +69,14 @@ fn emit_decode_type(
     indent: &str,
     ty: &IdlType,
     idx: &DefinitionIndex,
-    value_expr: &str,
-    ptr_expr: &str,
-    field_name: &str,
+    fe: &FieldExprs<'_>,
     c_std: CStandard,
     depth: u32,
 ) -> String {
     let is_c89 = matches!(c_std, CStandard::C89);
+    let value_expr = fe.value;
+    let ptr_expr = fe.ptr;
+    let field_name = fe.name;
 
     match ty {
         IdlType::Primitive(p) => match p {
@@ -113,16 +105,9 @@ fn emit_decode_type(
             let next_indent = format!("{indent}    ", indent = indent);
             let element_value = format!("{value_expr}[{var}]");
             let element_ptr = format!("&({value_expr}[{var}])");
-            out.push_str(&emit_decode_type(
-                &next_indent,
-                inner,
-                idx,
-                &element_value,
-                &element_ptr,
-                &format!("{field_name}_elem"),
-                c_std,
-                depth + 1,
-            ));
+            let elem_name = format!("{field_name}_elem");
+            let elem_fe = FieldExprs { value: &element_value, ptr: &element_ptr, name: &elem_name };
+            out.push_str(&emit_decode_type(&next_indent, inner, idx, &elem_fe, c_std, depth + 1));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -162,16 +147,9 @@ fn emit_decode_type(
             let next_indent = format!("{indent}    ", indent = indent);
             let element_value = format!("{value}.data[{var}]", value = value_expr);
             let element_ptr = format!("&({value}.data[{var}])", value = value_expr);
-            out.push_str(&emit_decode_type(
-                &next_indent,
-                inner,
-                idx,
-                &element_value,
-                &element_ptr,
-                &format!("{field_name}_elem"),
-                c_std,
-                depth + 1,
-            ));
+            let elem_name = format!("{field_name}_elem");
+            let elem_fe = FieldExprs { value: &element_value, ptr: &element_ptr, name: &elem_name };
+            out.push_str(&emit_decode_type(&next_indent, inner, idx, &elem_fe, c_std, depth + 1));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -211,28 +189,14 @@ fn emit_decode_type(
             let next_indent = format!("{indent}    ", indent = indent);
             let key_value = format!("{value}.keys[{var}]", value = value_expr);
             let key_ptr = format!("&({value}.keys[{var}])", value = value_expr);
-            out.push_str(&emit_decode_type(
-                &next_indent,
-                key,
-                idx,
-                &key_value,
-                &key_ptr,
-                &format!("{field_name}_key"),
-                c_std,
-                depth + 1,
-            ));
+            let key_name = format!("{field_name}_key");
+            let key_fe = FieldExprs { value: &key_value, ptr: &key_ptr, name: &key_name };
+            out.push_str(&emit_decode_type(&next_indent, key, idx, &key_fe, c_std, depth + 1));
             let val_value = format!("{value}.values[{var}]", value = value_expr);
             let val_ptr = format!("&({value}.values[{var}])", value = value_expr);
-            out.push_str(&emit_decode_type(
-                &next_indent,
-                value,
-                idx,
-                &val_value,
-                &val_ptr,
-                &format!("{field_name}_value"),
-                c_std,
-                depth + 1,
-            ));
+            let val_name = format!("{field_name}_value");
+            let val_fe = FieldExprs { value: &val_value, ptr: &val_ptr, name: &val_name };
+            out.push_str(&emit_decode_type(&next_indent, value, idx, &val_fe, c_std, depth + 1));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -252,16 +216,8 @@ fn emit_decode_type(
             } else if idx.enums.contains_key(&type_ident) {
                 decode_scalar(indent, 4, 4, ptr_expr)
             } else if let Some(td) = idx.typedefs.get(&type_ident) {
-                emit_decode_type(
-                    indent,
-                    &td.base_type,
-                    idx,
-                    value_expr,
-                    ptr_expr,
-                    field_name,
-                    c_std,
-                    depth,
-                )
+                let td_fe = FieldExprs { value: value_expr, ptr: ptr_expr, name: field_name };
+                emit_decode_type(indent, &td.base_type, idx, &td_fe, c_std, depth)
             } else {
                 format!(
                     "{indent}return -CDR_INVALID_DATA; /* unsupported named type `{type_ident}` */\n",

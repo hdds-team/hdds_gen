@@ -26,9 +26,9 @@ fn has_nontrivial_case(u: &Union, idx: &DefinitionIndex) -> bool {
 
 fn is_nontrivial_type(ty: &IdlType, idx: &DefinitionIndex) -> bool {
     match ty {
-        IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) => true,
-        IdlType::Sequence { bound: None, .. } => true,
-        IdlType::Map { .. } => true,
+        IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
+        | IdlType::Sequence { bound: None, .. }
+        | IdlType::Map { .. } => true,
         IdlType::Named(nm) => {
             let ident = last_ident(nm);
             idx.structs.contains_key(ident) || idx.unions.contains_key(ident)

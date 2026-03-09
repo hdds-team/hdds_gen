@@ -398,7 +398,7 @@ impl RustGenerator {
                 // It's an enum variant name - needs a match guard since `EnumType::Variant as i32`
                 // is not a valid pattern
                 if let IdlType::Named(type_name) = disc_type {
-                    let qualified = format!("{}::{}", type_name, v);
+                    let qualified = format!("{type_name}::{v}");
                     return (qualified, true);
                 }
                 // Fallback: use index
@@ -423,7 +423,7 @@ impl RustGenerator {
                         return v.clone();
                     }
                     if let IdlType::Named(type_name) = disc_type {
-                        return format!("{}::{} as u32", type_name, v);
+                        return format!("{type_name}::{v} as u32");
                     }
                     return v.clone();
                 }

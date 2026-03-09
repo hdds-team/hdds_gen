@@ -406,7 +406,7 @@ fn generate_cpp_field_inits(s: &Struct) -> String {
     inits
 }
 
-/// Generate `<< "field: " << msg.field` chain for C++ std::cout (publisher uses `msg.`)
+/// Generate `<< "field: " << msg.field` chain for C++ `std::cout` (publisher uses `msg.`)
 fn generate_cpp_field_print(s: &Struct) -> String {
     generate_cpp_field_print_with_prefix(s, "msg.")
 }

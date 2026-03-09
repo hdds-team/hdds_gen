@@ -206,12 +206,12 @@ impl Parser {
                                     self.advance();
                                     match self.peek() {
                                         TokenKind::IntegerLiteral(n) => {
-                                            let v = format!("-{}", n);
+                                            let v = format!("-{n}");
                                             self.advance();
                                             v
                                         }
                                         TokenKind::FloatLiteral(f) => {
-                                            let v = format!("-{}", f);
+                                            let v = format!("-{f}");
                                             self.advance();
                                             v
                                         }
