@@ -405,3 +405,126 @@ fn c_escapes_register_field() {
         "keyword 'register' not escaped: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// @key annotation codegen
+// Covers: typedef string, nested struct, enum, bool, char, Fixed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_key_typedef_string_uses_as_bytes() {
+    let idl = r#"
+        typedef string my_string;
+        @extensibility(APPENDABLE)
+        struct HelloWorld {
+            @key my_string message;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains("self.message.to_le_bytes()"),
+        "typedef string @key field must not use to_le_bytes: {out}"
+    );
+    assert!(
+        out.contains("self.message.encode_cdr2_le") || out.contains("self.message.as_bytes"),
+        "typedef string @key field must use CDR2 or as_bytes: {out}"
+    );
+}
+
+#[test]
+fn rust_key_nested_struct_uses_cdr2() {
+    let idl = r#"
+        struct Inner { uint32 index; };
+        @extensibility(APPENDABLE)
+        struct HelloWorld {
+            @key Inner message;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains(".message.to_le_bytes()"),
+        "struct @key field must not use to_le_bytes: {out}"
+    );
+    assert!(
+        out.contains("encode_cdr2_le"),
+        "struct @key field must use CDR2 serialization: {out}"
+    );
+}
+
+#[test]
+fn rust_key_enum_uses_u32_cast() {
+    let idl = r#"
+        enum Color { RED, GREEN, BLUE };
+        @extensibility(APPENDABLE)
+        struct Pixel {
+            @key Color color;
+            uint32 value;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains("self.color.to_le_bytes()"),
+        "enum @key field must not call to_le_bytes directly: {out}"
+    );
+    assert!(
+        out.contains("self.color as u32"),
+        "enum @key field must cast to u32: {out}"
+    );
+}
+
+#[test]
+fn rust_key_bool_uses_u8_cast() {
+    let idl = r#"
+        @extensibility(APPENDABLE)
+        struct Flags {
+            @key boolean active;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains("self.active.to_le_bytes()"),
+        "bool @key field must not call to_le_bytes directly: {out}"
+    );
+    assert!(
+        out.contains("self.active as u8"),
+        "bool @key field must cast to u8: {out}"
+    );
+}
+
+#[test]
+fn rust_key_char_uses_u32_cast() {
+    let idl = r#"
+        @extensibility(APPENDABLE)
+        struct Token {
+            @key char symbol;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains("self.symbol.to_le_bytes()"),
+        "char @key field must not call to_le_bytes directly: {out}"
+    );
+    assert!(
+        out.contains("self.symbol as u32"),
+        "char @key field must cast to u32: {out}"
+    );
+}
+
+#[test]
+fn rust_key_fixed_uses_cdr2() {
+    let idl = r#"
+        @extensibility(APPENDABLE)
+        struct Price {
+            @key fixed<10,2> amount;
+        };
+    "#;
+    let out = gen(Backend::Rust, idl);
+    assert!(
+        !out.contains("self.amount.to_le_bytes()"),
+        "Fixed @key field must not use to_le_bytes: {out}"
+    );
+    assert!(
+        out.contains("self.amount.encode_cdr2_le"),
+        "Fixed @key field must use CDR2 serialization: {out}"
+    );
+}

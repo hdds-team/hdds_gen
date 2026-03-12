@@ -30,6 +30,94 @@ thread_local! {
     static EMITTING_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
+/// How a `@key` field should be hashed in `compute_key()`.
+enum KeyHashKind {
+    /// String: iterate `as_bytes()`
+    String,
+    /// Numeric primitive: `to_le_bytes()` directly
+    Numeric,
+    /// `for b in (self.field as <cast>).to_le_bytes()` — used for bool(u8), char/enum(u32)
+    Cast(&'static str),
+    /// Complex type (struct, typedef, Fixed): CDR2-serialize then hash
+    Cdr2,
+}
+
+/// Classify how a `@key` field type should be hashed.
+fn classify_key_field(field_type: &IdlType) -> KeyHashKind {
+    // String / WString / bounded string (sequence<char>)
+    let is_string = matches!(
+        field_type,
+        IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
+    ) || matches!(
+        field_type,
+        IdlType::Sequence { inner, .. }
+            if matches!(**inner, IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar))
+    );
+    if is_string {
+        return KeyHashKind::String;
+    }
+    // Named type: check if it's an enum (cast u32) or struct/typedef (CDR2)
+    if let IdlType::Named(name) = field_type {
+        return if matches!(
+            helpers::lookup_type_def(name),
+            Some((helpers::TypeDef::Enum(_), _))
+        ) {
+            KeyHashKind::Cast("u32")
+        } else {
+            KeyHashKind::Cdr2
+        };
+    }
+    match field_type {
+        IdlType::Primitive(PrimitiveType::Boolean) => KeyHashKind::Cast("u8"),
+        IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar) => {
+            KeyHashKind::Cast("u32")
+        }
+        IdlType::Primitive(PrimitiveType::Fixed { .. }) => KeyHashKind::Cdr2,
+        _ => KeyHashKind::Numeric,
+    }
+}
+
+/// Emit hash code for one `@key` field into `output`.
+fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
+    push_fmt(output, format_args!("            // Hash @key field: {field}\n"));
+    match kind {
+        KeyHashKind::String => {
+            push_fmt(output, format_args!(
+                "            for &b in self.{field}.as_bytes() {{\n"
+            ));
+        }
+        KeyHashKind::Numeric => {
+            push_fmt(output, format_args!(
+                "            for b in self.{field}.to_le_bytes() {{\n"
+            ));
+        }
+        KeyHashKind::Cast(ty) => {
+            push_fmt(output, format_args!(
+                "            for b in (self.{field} as {ty}).to_le_bytes() {{\n"
+            ));
+        }
+        KeyHashKind::Cdr2 => {
+            output.push_str("            {\n");
+            output.push_str("                use ::hdds::core::ser::Cdr2Encode;\n");
+            output.push_str("                let mut _kbuf = [0u8; 4096];\n");
+            push_fmt(output, format_args!(
+                "                if let Ok(_kn) = self.{field}.encode_cdr2_le(&mut _kbuf) {{\n"
+            ));
+            output.push_str("                    for &b in &_kbuf[.._kn] {\n");
+            output.push_str("                        hash ^= b as u64;\n");
+            output.push_str("                        hash = hash.wrapping_mul(PRIME);\n");
+            output.push_str("                    }\n");
+            output.push_str("                }\n");
+            output.push_str("            }\n\n");
+            return;
+        }
+    }
+    // Common suffix for non-CDR2 variants
+    output.push_str("                hash ^= b as u64;\n");
+    output.push_str("                hash = hash.wrapping_mul(PRIME);\n");
+    output.push_str("            }\n\n");
+}
+
 impl RustGenerator {
     /// Generate DDS trait implementation for a struct
     ///
@@ -551,7 +639,6 @@ impl RustGenerator {
     fn emit_compute_key_method(s: &Struct) -> String {
         let mut output = String::new();
 
-        // Find @key fields with their types
         let key_fields: Vec<(&str, &IdlType)> = s
             .fields
             .iter()
@@ -559,48 +646,22 @@ impl RustGenerator {
             .map(|f| (f.name.as_str(), &f.field_type))
             .collect();
 
-        let has_key = !key_fields.is_empty();
-
         output.push_str(
             "\n        /// Compute instance key hash from @key fields (FNV-1a, 16 bytes)\n",
         );
         output.push_str("        fn compute_key(&self) -> [u8; 16] {\n");
 
-        if has_key {
+        if key_fields.is_empty() {
+            output.push_str("            // No @key fields - return zeroed hash\n");
+            output.push_str("            [0u8; 16]\n");
+        } else {
             output.push_str("            // FNV-1a hash of @key fields\n");
             output.push_str("            let mut hash: u64 = 14695981039346656037;\n");
             output.push_str("            const PRIME: u64 = 1099511628211;\n\n");
 
             for (field, field_type) in &key_fields {
-                push_fmt(
-                    &mut output,
-                    format_args!("            // Hash @key field: {}\n", field),
-                );
-                // Check if field is a string type (primitive String/WString or bounded string)
-                let is_string = matches!(
-                    field_type,
-                    IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
-                ) || matches!(
-                    field_type,
-                    IdlType::Sequence { inner, .. }
-                        if matches!(**inner, IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar))
-                );
-                if is_string {
-                    push_fmt(
-                        &mut output,
-                        format_args!("            let bytes = self.{}.as_bytes();\n", field),
-                    );
-                    output.push_str("            for &b in bytes {\n");
-                } else {
-                    push_fmt(
-                        &mut output,
-                        format_args!("            let bytes = self.{}.to_le_bytes();\n", field),
-                    );
-                    output.push_str("            for b in bytes {\n");
-                }
-                output.push_str("                hash ^= b as u64;\n");
-                output.push_str("                hash = hash.wrapping_mul(PRIME);\n");
-                output.push_str("            }\n\n");
+                let kind = classify_key_field(field_type);
+                emit_key_field_hash(&mut output, field, &kind);
             }
 
             output.push_str("            // Expand to 16 bytes\n");
@@ -609,9 +670,6 @@ impl RustGenerator {
             output.push_str("            hash = hash.wrapping_mul(PRIME);\n");
             output.push_str("            key[8..].copy_from_slice(&hash.to_le_bytes());\n");
             output.push_str("            key\n");
-        } else {
-            output.push_str("            // No @key fields - return zeroed hash\n");
-            output.push_str("            [0u8; 16]\n");
         }
 
         output.push_str("        }\n");
