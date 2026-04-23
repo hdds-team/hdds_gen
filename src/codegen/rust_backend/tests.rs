@@ -836,6 +836,78 @@ fn struct_with_xcdr1_annotation_delegator_targets_xcdr1() -> TestResult<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+//
+// `emit_dds_trait_impl` emits `fn encode(&self, buf, version)` and
+// `fn decode(buf, version)` on `impl ::hdds::api::DDS for T` that dispatch
+// on `::hdds::CdrVersion` to the inherent methods `encode_xcdr{1,2}_le` /
+// `decode_xcdr{1,2}_le`. Lock both match arms so the trait-level dispatch
+// stays aligned with the dual-emission inherents.
+
+#[test]
+fn dds_trait_impl_encode_dispatches_on_cdr_version() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "fn encode(&self, buf: &mut [u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<usize>"
+        ),
+        "DDS trait impl must emit the CdrVersion-parametrized encode signature. Got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "::hdds::CdrVersion::Xcdr1 => self.encode_xcdr1_le(buf).map_err(Into::into)"
+        ),
+        "DDS::encode must dispatch Xcdr1 to encode_xcdr1_le. Got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "::hdds::CdrVersion::Xcdr2 => self.encode_xcdr2_le(buf).map_err(Into::into)"
+        ),
+        "DDS::encode must dispatch Xcdr2 to encode_xcdr2_le. Got:\n{out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dds_trait_impl_decode_dispatches_on_cdr_version() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "fn decode(buf: &[u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<Self>"
+        ),
+        "DDS trait impl must emit the CdrVersion-parametrized decode signature. Got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "::hdds::CdrVersion::Xcdr1 => Self::decode_xcdr1_le(buf).map(|(val, _)| val).map_err(Into::into)"
+        ),
+        "DDS::decode must dispatch Xcdr1 to decode_xcdr1_le. Got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "::hdds::CdrVersion::Xcdr2 => Self::decode_xcdr2_le(buf).map(|(val, _)| val).map_err(Into::into)"
+        ),
+        "DDS::decode must dispatch Xcdr2 to decode_xcdr2_le. Got:\n{out}"
+    );
+    Ok(())
+}
+
 #[test]
 fn enum_emits_dual_inherent_methods_and_trait_delegator() -> TestResult<()> {
     let mut file = IdlFile::new();

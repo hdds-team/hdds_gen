@@ -97,6 +97,10 @@ fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
             ));
         }
         KeyHashKind::Cdr2 => {
+            // DDS-RTPS v2.5 §9.6.4.8 — KeyHash uses a fixed PLAIN_CDR2
+            // serialization of key fields (DDS-XTypes v1.3 §7.4.2),
+            // independent of the type's negotiated QoS data_representation.
+            // No CdrVersion dispatch here.
             output.push_str("            {\n");
             output.push_str("                use ::hdds::core::ser::Cdr2Encode;\n");
             output.push_str("                let mut _kbuf = [0u8; 4096];\n");
@@ -230,20 +234,33 @@ impl RustGenerator {
         output.push_str("            &DESC\n");
         output.push_str("        }\n\n");
 
-        // encode_cdr2()
+        // encode() — dispatches per OMG DDS-XTypes v1.3 §7.4 to the XCDR1 or XCDR2
+        // inherent method emitted by the dual-emission codegen.
         output.push_str(
-            "        fn encode_cdr2(&self, buf: &mut [u8]) -> ::hdds::api::Result<usize> {\n",
+            "        fn encode(&self, buf: &mut [u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<usize> {\n",
         );
-        output.push_str("            use ::hdds::core::ser::Cdr2Encode;\n");
-        output.push_str("            self.encode_cdr2_le(buf).map_err(Into::into)\n");
+        output.push_str("            match version {\n");
+        output.push_str(
+            "                ::hdds::CdrVersion::Xcdr1 => self.encode_xcdr1_le(buf).map_err(Into::into),\n",
+        );
+        output.push_str(
+            "                ::hdds::CdrVersion::Xcdr2 => self.encode_xcdr2_le(buf).map_err(Into::into),\n",
+        );
+        output.push_str("            }\n");
         output.push_str("        }\n\n");
 
-        // decode_cdr2()
-        output.push_str("        fn decode_cdr2(buf: &[u8]) -> ::hdds::api::Result<Self> {\n");
-        output.push_str("            use ::hdds::core::ser::Cdr2Decode;\n");
+        // decode() — symmetric dispatch for XCDR1/XCDR2 per OMG DDS-XTypes v1.3 §7.4.
         output.push_str(
-            "            Self::decode_cdr2_le(buf).map(|(val, _)| val).map_err(Into::into)\n",
+            "        fn decode(buf: &[u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<Self> {\n",
         );
+        output.push_str("            match version {\n");
+        output.push_str(
+            "                ::hdds::CdrVersion::Xcdr1 => Self::decode_xcdr1_le(buf).map(|(val, _)| val).map_err(Into::into),\n",
+        );
+        output.push_str(
+            "                ::hdds::CdrVersion::Xcdr2 => Self::decode_xcdr2_le(buf).map(|(val, _)| val).map_err(Into::into),\n",
+        );
+        output.push_str("            }\n");
         output.push_str("        }\n\n");
 
         // get_type_object() (XTypes)
