@@ -225,7 +225,8 @@ impl RustGenerator {
 
         // Trait delegator (primary = Xcdr2 always: the body is version-
         // invariant today, so the choice only affects which inherent method
-        // `Cdr2Encode::encode_cdr2_le` delegates to -- cosmetic).
+        // `Cdr2Encode::encode_cdr2_le` and `encode_cdr2_le_at`
+        // (DDS-XTypes v1.3 §7.4.3.4.1 Tab.15) delegate to -- cosmetic).
         dst.push('\n');
         dst.push_str(&Self::emit_cdr_trait_delegator(
             name,

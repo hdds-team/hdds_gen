@@ -406,6 +406,24 @@ impl RustGenerator {
     /// XCDR v2 encoders. The target of the delegation is the type's
     /// `@data_representation` annotation (`@XCDR1` -> Xcdr1, otherwise Xcdr2).
     ///
+    /// `encode_cdr2_le_at` is a REQUIRED trait method per DDS-XTypes v1.3
+    /// §7.4.3.4.1 Tab.15 (offset-propagating entry point). The body is a
+    /// trivial wrapper that calls `encode_cdr2_le` on a sub-slice and
+    /// advances the global cursor by the returned length. This is correct
+    /// at the top of an encode call chain (offset == 0, e.g. KeyHash
+    /// scratch buffer in `emit_dds_trait_impl`) and for trait-API consumers
+    /// that hold a fresh buffer. For nested struct usage where the outer
+    /// type passes a non-zero global offset, the trivial wrapper still
+    /// compiles correctly but the inner inherent encoder reasons about
+    /// alignment against the local sub-slice origin (0), not the global
+    /// position; an 8-byte primitive inside the inner type therefore
+    /// follows the inner's local alignment rule rather than the outer's
+    /// running cursor. This residual F01 surface is intentionally left to
+    /// a follow-up sub-commit (`1.6.1a-codegen-encode`) that lifts the
+    /// inherent encoder bodies onto the global cursor; the trait method
+    /// is added here so the workspace compiles and the API contract
+    /// matches the runtime trait definition in `hdds`.
+    ///
     /// This is shared between struct and union codegen (2.2-a emits for
     /// structs, 2.2-c will emit for unions).
     pub(super) fn emit_cdr_trait_delegator(name: &str, primary: CdrVersion) -> String {
@@ -418,6 +436,16 @@ impl RustGenerator {
              \n\
              \u{20}   fn max_cdr2_size(&self) -> usize {{\n\
              \u{20}       self.max_{suffix}_size()\n\
+             \u{20}   }}\n\
+             \n\
+             \u{20}   fn encode_cdr2_le_at(\n\
+             \u{20}       &self,\n\
+             \u{20}       dst: &mut [u8],\n\
+             \u{20}       offset: &mut usize,\n\
+             \u{20}   ) -> Result<(), CdrError> {{\n\
+             \u{20}       let len = self.encode_{suffix}_le(&mut dst[*offset..])?;\n\
+             \u{20}       *offset += len;\n\
+             \u{20}       Ok(())\n\
              \u{20}   }}\n\
              }}\n\
              \n\

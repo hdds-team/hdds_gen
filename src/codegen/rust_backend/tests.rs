@@ -837,6 +837,114 @@ fn struct_with_xcdr1_annotation_delegator_targets_xcdr1() -> TestResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// `Cdr2Encode::encode_cdr2_le_at` REQUIRED method (DDS-XTypes v1.3
+// §7.4.3.4.1 Tab.15) emission proof
+// ---------------------------------------------------------------------------
+//
+// The trait delegator must emit `encode_cdr2_le_at` on every generated
+// `impl Cdr2Encode for T` block; the runtime trait makes the method
+// REQUIRED (no default impl) so any missing emission produces an E0046
+// error in downstream crates compiling the generated code.
+
+#[test]
+fn struct_delegator_emits_encode_cdr2_le_at() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "fn encode_cdr2_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {"
+        ),
+        "Probe delegator must emit encode_cdr2_le_at signature.\nGot:\n{out}"
+    );
+    let body = slice_between(
+        &out,
+        "fn encode_cdr2_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("encode_cdr2_le_at body not found in Probe delegator");
+    assert!(
+        body.contains("self.encode_xcdr2_le(&mut dst[*offset..])"),
+        "encode_cdr2_le_at must delegate to encode_xcdr2_le on Probe (no @data_representation). \
+         Got body:\n{body}"
+    );
+    assert!(
+        body.contains("*offset += len;"),
+        "encode_cdr2_le_at must advance the global offset cursor. Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn xcdr1_struct_delegator_routes_encode_cdr2_le_at_to_xcdr1() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("ProbeV1");
+    s.add_annotation(Annotation::DataRepresentation("XCDR1".into()));
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    let body = slice_between(
+        &out,
+        "fn encode_cdr2_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("encode_cdr2_le_at body not found in ProbeV1 delegator");
+    assert!(
+        body.contains("self.encode_xcdr1_le(&mut dst[*offset..])"),
+        "ProbeV1 with @data_representation(XCDR1) must delegate encode_cdr2_le_at \
+         -> encode_xcdr1_le. Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dds_keyhash_cdr2_path_uses_encode_cdr2_le_at() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut nested = Struct::new("Nested");
+    nested.add_field(Field::new("v", IdlType::Primitive(PrimitiveType::Long)));
+    file.add_definition(Definition::Struct(nested));
+
+    let mut outer = Struct::new("Outer");
+    let mut key_field = Field::new("k", IdlType::Named("Nested".into()));
+    key_field.annotations.push(Annotation::Key);
+    outer.add_field(key_field);
+    file.add_definition(Definition::Struct(outer));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains("let mut _kbuf = [0u8; 4096];"),
+        "KeyHashKind::Cdr2 path must allocate _kbuf scratch buffer.\nGot:\n{out}"
+    );
+    assert!(
+        out.contains("let mut _koffset: usize = 0;"),
+        "KeyHashKind::Cdr2 path must initialize _koffset cursor for offset propagation.\nGot:\n{out}"
+    );
+    assert!(
+        out.contains("self.k.encode_cdr2_le_at(&mut _kbuf, &mut _koffset).is_ok()"),
+        "KeyHashKind::Cdr2 path must call encode_cdr2_le_at (DDS-XTypes v1.3 \
+         §7.4.3.4.1 Tab.15) on the key field, not legacy encode_cdr2_le.\nGot:\n{out}"
+    );
+    assert!(
+        out.contains("for &b in &_kbuf[.._koffset]"),
+        "KeyHashKind::Cdr2 path must hash up to the cursor position (_koffset), \
+         not a separately tracked length.\nGot:\n{out}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 //
 // `emit_dds_trait_impl` emits `fn encode(&self, buf, version)` and
 // `fn decode(buf, version)` on `impl ::hdds::api::DDS for T` that dispatch

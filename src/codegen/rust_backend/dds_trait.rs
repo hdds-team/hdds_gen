@@ -104,17 +104,21 @@ fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
             // DDS-RTPS v2.5 §9.6.4.8 — KeyHash uses a fixed PLAIN_CDR2
             // serialization of key fields (DDS-XTypes v1.3 §7.4.2),
             // independent of the type's negotiated QoS data_representation.
-            // No CdrVersion dispatch here.
+            // No CdrVersion dispatch here. The caller uses encode_cdr2_le_at
+            // (DDS-XTypes v1.3 §7.4.3.4.1 Tab.15) so the field encoder sees
+            // the same global cursor it would observe in a parent struct,
+            // even though the buffer here is single-field.
             output.push_str("            {\n");
             output.push_str("                use ::hdds::core::ser::Cdr2Encode;\n");
             output.push_str("                let mut _kbuf = [0u8; 4096];\n");
+            output.push_str("                let mut _koffset: usize = 0;\n");
             push_fmt(
                 output,
                 format_args!(
-                    "                if let Ok(_kn) = self.{field}.encode_cdr2_le(&mut _kbuf) {{\n"
+                    "                if self.{field}.encode_cdr2_le_at(&mut _kbuf, &mut _koffset).is_ok() {{\n"
                 ),
             );
-            output.push_str("                    for &b in &_kbuf[.._kn] {\n");
+            output.push_str("                    for &b in &_kbuf[.._koffset] {\n");
             output.push_str("                        hash ^= b as u64;\n");
             output.push_str("                        hash = hash.wrapping_mul(PRIME);\n");
             output.push_str("                    }\n");

@@ -71,6 +71,8 @@ impl RustGenerator {
         }
 
         // Manual Cdr2Encode / Cdr2Decode delegators for the generic Fixed<D, S>.
+        // emit_cdr_trait_delegator can't be used here because Fixed<D, S>
+        // carries const generics that helper does not format.
         output.push_str("impl<const D: u32, const S: u32> Cdr2Encode for Fixed<D, S> {\n");
         output.push_str(
             "    fn encode_cdr2_le(&self, dst: &mut [u8]) -> Result<usize, CdrError> {\n",
@@ -78,6 +80,13 @@ impl RustGenerator {
         output.push_str("        self.encode_xcdr2_le(dst)\n");
         output.push_str("    }\n");
         output.push_str("    fn max_cdr2_size(&self) -> usize { self.max_xcdr2_size() }\n");
+        output.push_str(
+            "    fn encode_cdr2_le_at(&self, dst: &mut [u8], offset: &mut usize) -> Result<(), CdrError> {\n",
+        );
+        output.push_str("        let len = self.encode_xcdr2_le(&mut dst[*offset..])?;\n");
+        output.push_str("        *offset += len;\n");
+        output.push_str("        Ok(())\n");
+        output.push_str("    }\n");
         output.push_str("}\n\n");
         output.push_str("impl<const D: u32, const S: u32> Cdr2Decode for Fixed<D, S> {\n");
         output.push_str("    fn decode_cdr2_le(src: &[u8]) -> Result<(Self, usize), CdrError> {\n");

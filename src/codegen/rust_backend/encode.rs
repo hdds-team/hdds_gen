@@ -77,6 +77,10 @@ impl RustGenerator {
                             "        let padding = ({alignment} - (offset % {alignment})) % {alignment};\n"
                         ),
                     );
+                    code.push_str(
+                        "        if dst.len() < offset + padding { return Err(CdrError::BufferTooSmall); }\n",
+                    );
+                    code.push_str("        dst[offset..offset+padding].fill(0);\n");
                     code.push_str("        offset += padding;\n\n");
                 }
 

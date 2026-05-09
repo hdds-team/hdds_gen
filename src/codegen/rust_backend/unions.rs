@@ -176,6 +176,16 @@ impl RustGenerator {
             );
             push_fmt(
                 &mut code,
+                format_args!(
+                    "{indent}        if dst.len() < offset + padding {{ return Err(CdrError::BufferTooSmall); }}\n"
+                ),
+            );
+            push_fmt(
+                &mut code,
+                format_args!("{indent}        dst[offset..offset+padding].fill(0);\n"),
+            );
+            push_fmt(
+                &mut code,
                 format_args!("{indent}        offset += padding;\n\n"),
             );
         }
@@ -543,6 +553,16 @@ impl RustGenerator {
                 format_args!(
                     "{indent}                let padding = ({alignment} - (offset % {alignment})) % {alignment};\n"
                 ),
+            );
+            push_fmt(
+                &mut code,
+                format_args!(
+                    "{indent}                if dst.len() < offset + padding {{ return Err(CdrError::BufferTooSmall); }}\n"
+                ),
+            );
+            push_fmt(
+                &mut code,
+                format_args!("{indent}                dst[offset..offset+padding].fill(0);\n"),
             );
             push_fmt(
                 &mut code,
