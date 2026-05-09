@@ -27,8 +27,8 @@ mod unions;
 mod tests;
 
 pub(crate) use helpers::push_fmt;
-pub(super) use helpers::CdrVersion;
 use helpers::uses_fixed;
+pub(super) use helpers::CdrVersion;
 
 /// Serde rename style for JSON serialization
 #[derive(Clone, Copy, Debug, Default)]
@@ -178,7 +178,10 @@ impl RustGenerator {
         for def in definitions {
             match def {
                 Definition::Module(m) => {
-                    push_fmt(output, format_args!("{indent}pub mod {name} {{\n", name = m.name));
+                    push_fmt(
+                        output,
+                        format_args!("{indent}pub mod {name} {{\n", name = m.name),
+                    );
                     push_fmt(output, format_args!("{indent}    use super::*;\n\n"));
                     // Recurse into nested module
                     let mut nested_path: Vec<&str> = module_path.to_vec();
@@ -188,11 +191,15 @@ impl RustGenerator {
                     push_fmt(output, format_args!("{indent}}}\n\n"));
                 }
                 Definition::Struct(s) => {
-                    let code = self.generate_struct_with_module(s, module_name.as_deref(), &enum_names);
+                    let code =
+                        self.generate_struct_with_module(s, module_name.as_deref(), &enum_names);
                     if indent.is_empty() {
                         output.push_str(&code);
                     } else {
-                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                        push_fmt(
+                            output,
+                            format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))),
+                        );
                     }
                 }
                 Definition::Enum(e) => {
@@ -200,7 +207,10 @@ impl RustGenerator {
                     if indent.is_empty() {
                         output.push_str(&code);
                     } else {
-                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                        push_fmt(
+                            output,
+                            format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))),
+                        );
                     }
                 }
                 Definition::Typedef(t) => {
@@ -216,7 +226,10 @@ impl RustGenerator {
                     if indent.is_empty() {
                         output.push_str(&code);
                     } else {
-                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                        push_fmt(
+                            output,
+                            format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))),
+                        );
                     }
                 }
                 Definition::Bitset(b) => {
@@ -224,7 +237,10 @@ impl RustGenerator {
                     if indent.is_empty() {
                         output.push_str(&code);
                     } else {
-                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                        push_fmt(
+                            output,
+                            format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))),
+                        );
                     }
                 }
                 Definition::Bitmask(bm) => {
@@ -232,7 +248,10 @@ impl RustGenerator {
                     if indent.is_empty() {
                         output.push_str(&code);
                     } else {
-                        push_fmt(output, format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))));
+                        push_fmt(
+                            output,
+                            format_args!("{indent}{}", code.replace('\n', &format!("\n{indent}"))),
+                        );
                     }
                 }
                 _ => {}

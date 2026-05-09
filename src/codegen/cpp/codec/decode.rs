@@ -285,7 +285,10 @@ fn decode_array(
     let mut out = String::new();
     let align = idx.align_of(inner);
     let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, {align});");
-    let _ = writeln!(out, "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{");
+    let _ = writeln!(
+        out,
+        "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{"
+    );
     let next_indent = format!("{indent}    ");
     let element_value = format!("{value_expr}[{var}]");
     out.push_str(&emit_decode_type(

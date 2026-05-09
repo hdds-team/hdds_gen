@@ -138,7 +138,10 @@ fn emit_max_array(
     let mut out = String::new();
     let align = idx.align_of(inner);
     let _ = writeln!(out, "{indent}offset = cdr_align(offset, {align});");
-    let _ = writeln!(out, "{indent}for (uint32_t {var} = 0; {var} < {size}; ++{var}) {{");
+    let _ = writeln!(
+        out,
+        "{indent}for (uint32_t {var} = 0; {var} < {size}; ++{var}) {{"
+    );
     let next_indent = format!("{indent}    ", indent = indent);
     let element_value = format!("{value_expr}[{var}]");
     let element_ptr = format!("&({value_expr}[{var}])");

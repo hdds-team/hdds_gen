@@ -105,7 +105,7 @@ impl ConstValue {
                 _ => err("* expects numbers"),
             },
             Op::Div => match (self, rhs) {
-                (Self::Int(_, ), Self::Int(0)) => err("Division by zero"),
+                (Self::Int(_), Self::Int(0)) => err("Division by zero"),
                 (Self::Int(a), Self::Int(b)) => Ok(Self::Int(a.wrapping_div(b))),
                 (Self::Float(a), Self::Float(b)) => Ok(Self::Float(a / b)),
                 _ => err("/ expects numbers"),

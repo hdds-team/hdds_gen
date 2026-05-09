@@ -78,8 +78,16 @@ impl RustGenerator {
         //   emission; PL_CDR v1 is not supported. `@data_representation(XCDR1)`
         //   on a mutable type is rejected at parse time by the validator.
         if super::helpers::is_mutable_struct(s) || super::helpers::is_compact_mutable_struct(s) {
-            output.push_str(&Self::emit_cdr2_encode_impl(s, enum_names, CdrVersion::Xcdr2));
-            output.push_str(&Self::emit_cdr2_decode_impl(s, enum_names, CdrVersion::Xcdr2));
+            output.push_str(&Self::emit_cdr2_encode_impl(
+                s,
+                enum_names,
+                CdrVersion::Xcdr2,
+            ));
+            output.push_str(&Self::emit_cdr2_decode_impl(
+                s,
+                enum_names,
+                CdrVersion::Xcdr2,
+            ));
             output.push_str(&Self::emit_cdr_trait_delegator(&s.name, CdrVersion::Xcdr2));
         } else {
             let repr = super::helpers::data_representation_annotation(&s.annotations);

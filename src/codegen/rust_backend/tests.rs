@@ -375,28 +375,28 @@ fn xcdr1_alignment_primitives_match_spec_table_31() {
 
     for p in &one_byte {
         assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(p.clone())),
+            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
             1,
             "XCDR1: {p:?} must align to 1"
         );
     }
     for p in &two_byte {
         assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(p.clone())),
+            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
             2,
             "XCDR1: {p:?} must align to 2"
         );
     }
     for p in &four_byte {
         assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(p.clone())),
+            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
             4,
             "XCDR1: {p:?} must align to 4"
         );
     }
     for p in &eight_byte {
         assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(p.clone())),
+            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
             8,
             "XCDR1: {p:?} must align to 8 per Table 31"
         );
@@ -416,7 +416,7 @@ fn xcdr2_alignment_caps_8_byte_primitives_at_4() {
     ];
     for p in &capped_at_4 {
         assert_eq!(
-            RustGenerator::xcdr2_alignment(&IdlType::Primitive(p.clone())),
+            RustGenerator::xcdr2_alignment(&IdlType::Primitive(*p)),
             4,
             "XCDR2: {p:?} must cap at 4 per Section 7.4.2 (not 8 as in XCDR1)"
         );
@@ -862,15 +862,11 @@ fn dds_trait_impl_encode_dispatches_on_cdr_version() -> TestResult<()> {
         "DDS trait impl must emit the CdrVersion-parametrized encode signature. Got:\n{out}"
     );
     assert!(
-        out.contains(
-            "::hdds::CdrVersion::Xcdr1 => self.encode_xcdr1_le(buf).map_err(Into::into)"
-        ),
+        out.contains("::hdds::CdrVersion::Xcdr1 => self.encode_xcdr1_le(buf).map_err(Into::into)"),
         "DDS::encode must dispatch Xcdr1 to encode_xcdr1_le. Got:\n{out}"
     );
     assert!(
-        out.contains(
-            "::hdds::CdrVersion::Xcdr2 => self.encode_xcdr2_le(buf).map_err(Into::into)"
-        ),
+        out.contains("::hdds::CdrVersion::Xcdr2 => self.encode_xcdr2_le(buf).map_err(Into::into)"),
         "DDS::encode must dispatch Xcdr2 to encode_xcdr2_le. Got:\n{out}"
     );
     Ok(())

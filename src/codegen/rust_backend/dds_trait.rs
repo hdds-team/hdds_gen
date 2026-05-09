@@ -69,9 +69,7 @@ fn classify_key_field(field_type: &IdlType) -> KeyHashKind {
     }
     match field_type {
         IdlType::Primitive(PrimitiveType::Boolean) => KeyHashKind::Cast("u8"),
-        IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar) => {
-            KeyHashKind::Cast("u32")
-        }
+        IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar) => KeyHashKind::Cast("u32"),
         IdlType::Primitive(PrimitiveType::Fixed { .. }) => KeyHashKind::Cdr2,
         _ => KeyHashKind::Numeric,
     }
@@ -79,22 +77,28 @@ fn classify_key_field(field_type: &IdlType) -> KeyHashKind {
 
 /// Emit hash code for one `@key` field into `output`.
 fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
-    push_fmt(output, format_args!("            // Hash @key field: {field}\n"));
+    push_fmt(
+        output,
+        format_args!("            // Hash @key field: {field}\n"),
+    );
     match kind {
         KeyHashKind::String => {
-            push_fmt(output, format_args!(
-                "            for &b in self.{field}.as_bytes() {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!("            for &b in self.{field}.as_bytes() {{\n"),
+            );
         }
         KeyHashKind::Numeric => {
-            push_fmt(output, format_args!(
-                "            for b in self.{field}.to_le_bytes() {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!("            for b in self.{field}.to_le_bytes() {{\n"),
+            );
         }
         KeyHashKind::Cast(ty) => {
-            push_fmt(output, format_args!(
-                "            for b in (self.{field} as {ty}).to_le_bytes() {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!("            for b in (self.{field} as {ty}).to_le_bytes() {{\n"),
+            );
         }
         KeyHashKind::Cdr2 => {
             // DDS-RTPS v2.5 §9.6.4.8 — KeyHash uses a fixed PLAIN_CDR2
@@ -104,9 +108,12 @@ fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
             output.push_str("            {\n");
             output.push_str("                use ::hdds::core::ser::Cdr2Encode;\n");
             output.push_str("                let mut _kbuf = [0u8; 4096];\n");
-            push_fmt(output, format_args!(
-                "                if let Ok(_kn) = self.{field}.encode_cdr2_le(&mut _kbuf) {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!(
+                    "                if let Ok(_kn) = self.{field}.encode_cdr2_le(&mut _kbuf) {{\n"
+                ),
+            );
             output.push_str("                    for &b in &_kbuf[.._kn] {\n");
             output.push_str("                        hash ^= b as u64;\n");
             output.push_str("                        hash = hash.wrapping_mul(PRIME);\n");

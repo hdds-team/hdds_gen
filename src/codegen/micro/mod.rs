@@ -899,7 +899,8 @@ impl MicroGenerator {
                 );
                 out.push_str("                for _ in 0..len {\n");
                 Self::emit_element_decode(
-                    &mut out, inner,
+                    &mut out,
+                    inner,
                     "v.push(",
                     ").map_err(|_| CdrError::BufferTooSmall)?",
                 );

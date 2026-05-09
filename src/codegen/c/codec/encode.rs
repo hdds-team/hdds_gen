@@ -55,12 +55,27 @@ pub(super) fn emit_encode_field(
             parent = parent,
             name = escaped
         );
-        let fe = FieldExprs { value: &value_expr, ptr: &ptr_expr, name: &escaped };
-        out.push_str(&emit_encode_type("        ", &f.field_type, idx, &fe, c_std, 0));
+        let fe = FieldExprs {
+            value: &value_expr,
+            ptr: &ptr_expr,
+            name: &escaped,
+        };
+        out.push_str(&emit_encode_type(
+            "        ",
+            &f.field_type,
+            idx,
+            &fe,
+            c_std,
+            0,
+        ));
         out.push_str("    }\n");
         out
     } else {
-        let fe = FieldExprs { value: &value_expr, ptr: &ptr_expr, name: &escaped };
+        let fe = FieldExprs {
+            value: &value_expr,
+            ptr: &ptr_expr,
+            name: &escaped,
+        };
         emit_encode_type("    ", &f.field_type, idx, &fe, c_std, 0)
     }
 }
@@ -106,15 +121,29 @@ fn emit_encode_type(
             if is_c89 {
                 let _ = writeln!(out, "{indent}for ({var} = 0; {var} < {size}; ++{var}) {{");
             } else {
-                let _ = writeln!(out, "{indent}for (uint32_t {var} = 0; {var} < {size}; ++{var}) {{");
+                let _ = writeln!(
+                    out,
+                    "{indent}for (uint32_t {var} = 0; {var} < {size}; ++{var}) {{"
+                );
             }
             let next_indent = format!("{indent}    ", indent = indent);
             let element_ty = inner.as_ref();
             let element_value = format!("{value_expr}[{var}]");
             let element_ptr = format!("&({value_expr}[{var}])");
             let elem_name = format!("{field_name}_elem");
-            let elem_fe = FieldExprs { value: &element_value, ptr: &element_ptr, name: &elem_name };
-            out.push_str(&emit_encode_type(&next_indent, element_ty, idx, &elem_fe, c_std, depth + 1));
+            let elem_fe = FieldExprs {
+                value: &element_value,
+                ptr: &element_ptr,
+                name: &elem_name,
+            };
+            out.push_str(&emit_encode_type(
+                &next_indent,
+                element_ty,
+                idx,
+                &elem_fe,
+                c_std,
+                depth + 1,
+            ));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -156,8 +185,19 @@ fn emit_encode_type(
             let element_value = format!("{value}.data[{var}]", value = value_expr);
             let element_ptr = format!("&({value}.data[{var}])", value = value_expr);
             let elem_name = format!("{field_name}_elem");
-            let elem_fe = FieldExprs { value: &element_value, ptr: &element_ptr, name: &elem_name };
-            out.push_str(&emit_encode_type(&next_indent, element_ty, idx, &elem_fe, c_std, depth + 1));
+            let elem_fe = FieldExprs {
+                value: &element_value,
+                ptr: &element_ptr,
+                name: &elem_name,
+            };
+            out.push_str(&emit_encode_type(
+                &next_indent,
+                element_ty,
+                idx,
+                &elem_fe,
+                c_std,
+                depth + 1,
+            ));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -200,13 +240,35 @@ fn emit_encode_type(
             let key_value = format!("{value}.keys[{var}]", value = value_expr);
             let key_ptr = format!("&({value}.keys[{var}])", value = value_expr);
             let key_name = format!("{field_name}_key");
-            let key_fe = FieldExprs { value: &key_value, ptr: &key_ptr, name: &key_name };
-            out.push_str(&emit_encode_type(&next_indent, key_ty, idx, &key_fe, c_std, depth + 1));
+            let key_fe = FieldExprs {
+                value: &key_value,
+                ptr: &key_ptr,
+                name: &key_name,
+            };
+            out.push_str(&emit_encode_type(
+                &next_indent,
+                key_ty,
+                idx,
+                &key_fe,
+                c_std,
+                depth + 1,
+            ));
             let val_value = format!("{value}.values[{var}]", value = value_expr);
             let val_ptr = format!("&({value}.values[{var}])", value = value_expr);
             let val_name = format!("{field_name}_value");
-            let val_fe = FieldExprs { value: &val_value, ptr: &val_ptr, name: &val_name };
-            out.push_str(&emit_encode_type(&next_indent, val_ty, idx, &val_fe, c_std, depth + 1));
+            let val_fe = FieldExprs {
+                value: &val_value,
+                ptr: &val_ptr,
+                name: &val_name,
+            };
+            out.push_str(&emit_encode_type(
+                &next_indent,
+                val_ty,
+                idx,
+                &val_fe,
+                c_std,
+                depth + 1,
+            ));
             let _ = writeln!(out, "{indent}}}");
             out
         }
@@ -226,7 +288,11 @@ fn emit_encode_type(
             } else if idx.enums.contains_key(&type_ident) {
                 encode_scalar(indent, 4, 4, ptr_expr)
             } else if let Some(td) = idx.typedefs.get(&type_ident) {
-                let td_fe = FieldExprs { value: value_expr, ptr: ptr_expr, name: field_name };
+                let td_fe = FieldExprs {
+                    value: value_expr,
+                    ptr: ptr_expr,
+                    name: field_name,
+                };
                 emit_encode_type(indent, &td.base_type, idx, &td_fe, c_std, depth)
             } else {
                 format!(
@@ -321,7 +387,7 @@ fn encode_fixed(indent: &str, ptr_expr: &str, is_c89: bool) -> String {
     } else {
         "uint8_t raw[CDR_SIZE_FIXED128];\n    "
     };
-    let (open, close) = if is_c89 { ("", "") } else { ("{\n    ", "}\n" ) };
+    let (open, close) = if is_c89 { ("", "") } else { ("{\n    ", "}\n") };
     format!(
         "{indent}err = cdr_pad(dst, &offset, len, CDR_ALIGN_4);\n\
          {indent}if (err) {{ return err; }}\n\

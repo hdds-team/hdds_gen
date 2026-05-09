@@ -595,12 +595,8 @@ impl RustGenerator {
                     &mut code,
                     format_args!("{indent}                for item in {var}.iter() {{\n"),
                 );
-                let inner_encode = Self::emit_union_value_encode(
-                    inner,
-                    "item",
-                    &format!("{indent}    "),
-                    version,
-                );
+                let inner_encode =
+                    Self::emit_union_value_encode(inner, "item", &format!("{indent}    "), version);
                 code.push_str(&inner_encode);
                 push_fmt(&mut code, format_args!("{indent}                }}\n"));
             }

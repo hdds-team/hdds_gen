@@ -21,7 +21,9 @@ fn loop_var(depth: u32) -> &'static str {
 /// Returns true if any case field has a non-trivial C++ type that cannot
 /// live inside an anonymous union without explicit constructors/destructors.
 fn has_nontrivial_case(u: &Union, idx: &DefinitionIndex) -> bool {
-    u.cases.iter().any(|c| is_nontrivial_type(&c.field.field_type, idx))
+    u.cases
+        .iter()
+        .any(|c| is_nontrivial_type(&c.field.field_type, idx))
 }
 
 fn is_nontrivial_type(ty: &IdlType, idx: &DefinitionIndex) -> bool {
@@ -723,7 +725,10 @@ fn encode_array(
     let var = loop_var(depth);
     let align = idx.align_of(inner);
     let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, {align});");
-    let _ = writeln!(out, "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{");
+    let _ = writeln!(
+        out,
+        "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{"
+    );
     let next_indent = format!("{indent}    ");
     let element_value = format!("{value_expr}[{var}]");
     out.push_str(&emit_encode_type(
@@ -751,7 +756,10 @@ fn decode_array(
     let var = loop_var(depth);
     let align = idx.align_of(inner);
     let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, {align});");
-    let _ = writeln!(out, "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{");
+    let _ = writeln!(
+        out,
+        "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{"
+    );
     let next_indent = format!("{indent}    ");
     let element_value = format!("{value_expr}[{var}]");
     out.push_str(&emit_decode_type(

@@ -372,11 +372,9 @@ fn data_representation_xcdr2_on_mutable_struct_is_ok() {
     let ast = parse_idl(input);
     let diags = validate(&ast);
     assert!(
-        !diags
-            .iter()
-            .any(|d| matches!(d.level, Level::Error)
-                && d.message.contains("@data_representation")
-                && d.message.contains("@mutable")),
+        !diags.iter().any(|d| matches!(d.level, Level::Error)
+            && d.message.contains("@data_representation")
+            && d.message.contains("@mutable")),
         "unexpected mutable-vs-XCDR2 diag: {:?}",
         diags
     );

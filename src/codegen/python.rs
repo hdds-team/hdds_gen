@@ -362,9 +362,9 @@ impl PythonGenerator {
                         " = \"\"".to_string()
                     }
                     IdlType::Primitive(PrimitiveType::Boolean) => " = False".to_string(),
-                    IdlType::Primitive(PrimitiveType::Float | PrimitiveType::Double | PrimitiveType::LongDouble) => {
-                        " = 0.0".to_string()
-                    }
+                    IdlType::Primitive(
+                        PrimitiveType::Float | PrimitiveType::Double | PrimitiveType::LongDouble,
+                    ) => " = 0.0".to_string(),
                     IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar) => {
                         " = 0".to_string()
                     }
@@ -379,9 +379,9 @@ impl PythonGenerator {
                                     " = field(default_factory=list)".to_string()
                                 }
                                 IdlType::Map { .. } => " = field(default_factory=dict)".to_string(),
-                                IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) => {
-                                    " = \"\"".to_string()
-                                }
+                                IdlType::Primitive(
+                                    PrimitiveType::String | PrimitiveType::WString,
+                                ) => " = \"\"".to_string(),
                                 _ => " = 0".to_string(),
                             }
                         } else if idx.structs.contains_key(&type_ident) {
@@ -984,7 +984,10 @@ impl PythonGenerator {
                 Self::emit_encode_named(&mut out, var, nm, idx, indent);
             }
             IdlType::Map { .. } => {
-                push_fmt(&mut out, format_args!("{indent}pass  # TODO: map element encoding\n"));
+                push_fmt(
+                    &mut out,
+                    format_args!("{indent}pass  # TODO: map element encoding\n"),
+                );
             }
         }
         out
@@ -997,10 +1000,7 @@ impl PythonGenerator {
                 out,
                 format_args!("{indent}pad = ({align} - (offset % {align})) % {align}\n"),
             );
-            push_fmt(
-                out,
-                format_args!("{indent}parts.append(b'\\x00' * pad)\n"),
-            );
+            push_fmt(out, format_args!("{indent}parts.append(b'\\x00' * pad)\n"));
             push_fmt(out, format_args!("{indent}offset += pad\n"));
             push_fmt(
                 out,
@@ -1008,14 +1008,8 @@ impl PythonGenerator {
             );
             push_fmt(out, format_args!("{indent}offset += {size}\n"));
         } else if matches!(p, PrimitiveType::String | PrimitiveType::WString) {
-            push_fmt(
-                out,
-                format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"),
-            );
-            push_fmt(
-                out,
-                format_args!("{indent}parts.append(b'\\x00' * pad)\n"),
-            );
+            push_fmt(out, format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"));
+            push_fmt(out, format_args!("{indent}parts.append(b'\\x00' * pad)\n"));
             push_fmt(out, format_args!("{indent}offset += pad\n"));
             push_fmt(
                 out,
@@ -1026,14 +1020,8 @@ impl PythonGenerator {
                 format_args!("{indent}parts.append(struct.pack('<I', len(_encoded)))\n"),
             );
             push_fmt(out, format_args!("{indent}offset += 4\n"));
-            push_fmt(
-                out,
-                format_args!("{indent}parts.append(_encoded)\n"),
-            );
-            push_fmt(
-                out,
-                format_args!("{indent}offset += len(_encoded)\n"),
-            );
+            push_fmt(out, format_args!("{indent}parts.append(_encoded)\n"));
+            push_fmt(out, format_args!("{indent}offset += len(_encoded)\n"));
         }
     }
 
@@ -1044,24 +1032,15 @@ impl PythonGenerator {
         idx: &DefinitionIndex,
         indent: &str,
     ) {
-        push_fmt(
-            out,
-            format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"),
-        );
-        push_fmt(
-            out,
-            format_args!("{indent}parts.append(b'\\x00' * pad)\n"),
-        );
+        push_fmt(out, format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"));
+        push_fmt(out, format_args!("{indent}parts.append(b'\\x00' * pad)\n"));
         push_fmt(out, format_args!("{indent}offset += pad\n"));
         push_fmt(
             out,
             format_args!("{indent}parts.append(struct.pack('<I', len({var})))\n"),
         );
         push_fmt(out, format_args!("{indent}offset += 4\n"));
-        push_fmt(
-            out,
-            format_args!("{indent}for _inner_elem in {var}:\n"),
-        );
+        push_fmt(out, format_args!("{indent}for _inner_elem in {var}:\n"));
         let inner_indent = format!("{indent}    ");
         out.push_str(&Self::emit_encode_element(
             "_inner_elem",
@@ -1080,31 +1059,18 @@ impl PythonGenerator {
     ) {
         let type_name = Self::last_ident(nm);
         if idx.structs.contains_key(&type_name) {
-            push_fmt(
-                out,
-                format_args!("{indent}_sub = {var}.encode_cdr2_le()\n"),
-            );
+            push_fmt(out, format_args!("{indent}_sub = {var}.encode_cdr2_le()\n"));
             push_fmt(out, format_args!("{indent}parts.append(_sub)\n"));
             push_fmt(out, format_args!("{indent}offset += len(_sub)\n"));
         } else if let Some(td) = idx.typedefs.get(&type_name) {
             out.push_str(&Self::emit_encode_element(var, &td.base_type, idx, indent));
-        } else if idx.enums.contains_key(&type_name)
-            || idx.bitmasks.contains_key(&type_name)
-        {
-            push_fmt(
-                out,
-                format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"),
-            );
-            push_fmt(
-                out,
-                format_args!("{indent}parts.append(b'\\x00' * pad)\n"),
-            );
+        } else if idx.enums.contains_key(&type_name) || idx.bitmasks.contains_key(&type_name) {
+            push_fmt(out, format_args!("{indent}pad = (4 - (offset % 4)) % 4\n"));
+            push_fmt(out, format_args!("{indent}parts.append(b'\\x00' * pad)\n"));
             push_fmt(out, format_args!("{indent}offset += pad\n"));
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}parts.append(struct.pack('<i', int({var})))\n"
-                ),
+                format_args!("{indent}parts.append(struct.pack('<i', int({var})))\n"),
             );
             push_fmt(out, format_args!("{indent}offset += 4\n"));
         }
@@ -1483,10 +1449,7 @@ impl PythonGenerator {
                         ),
                     );
                     if matches!(p, PrimitiveType::Boolean) {
-                        push_fmt(
-                            &mut out,
-                            format_args!("{indent}_{name} = bool(_{name})\n"),
-                        );
+                        push_fmt(&mut out, format_args!("{indent}_{name} = bool(_{name})\n"));
                     }
                     push_fmt(&mut out, format_args!("{indent}offset += {size}\n"));
                 } else if matches!(p, PrimitiveType::String) {
@@ -1671,40 +1634,31 @@ impl PythonGenerator {
                 Self::emit_decode_named(&mut out, list_name, nm, idx, indent);
             }
             IdlType::Map { .. } => {
-                push_fmt(&mut out, format_args!("{indent}pass  # TODO: map element decoding\n"));
+                push_fmt(
+                    &mut out,
+                    format_args!("{indent}pass  # TODO: map element decoding\n"),
+                );
             }
         }
         out
     }
 
-    fn emit_decode_primitive(
-        out: &mut String,
-        list_name: &str,
-        p: &PrimitiveType,
-        indent: &str,
-    ) {
+    fn emit_decode_primitive(out: &mut String, list_name: &str, p: &PrimitiveType, indent: &str) {
         if let Some((fmt, size)) = Self::primitive_to_struct_format(p) {
             let align = size.max(1);
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}offset += ({align} - (offset % {align})) % {align}\n"
-                ),
+                format_args!("{indent}offset += ({align} - (offset % {align})) % {align}\n"),
             );
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}_elem, = struct.unpack_from('{fmt}', data, offset)\n"
-                ),
+                format_args!("{indent}_elem, = struct.unpack_from('{fmt}', data, offset)\n"),
             );
             if matches!(p, PrimitiveType::Boolean) {
                 push_fmt(out, format_args!("{indent}_elem = bool(_elem)\n"));
             }
             push_fmt(out, format_args!("{indent}offset += {size}\n"));
-            push_fmt(
-                out,
-                format_args!("{indent}_{list_name}.append(_elem)\n"),
-            );
+            push_fmt(out, format_args!("{indent}_{list_name}.append(_elem)\n"));
         } else if matches!(p, PrimitiveType::String | PrimitiveType::WString) {
             push_fmt(
                 out,
@@ -1712,22 +1666,15 @@ impl PythonGenerator {
             );
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}_slen, = struct.unpack_from('<I', data, offset)\n"
-                ),
+                format_args!("{indent}_slen, = struct.unpack_from('<I', data, offset)\n"),
             );
             push_fmt(out, format_args!("{indent}offset += 4\n"));
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}_elem = data[offset:offset+_slen-1].decode('utf-8')\n"
-                ),
+                format_args!("{indent}_elem = data[offset:offset+_slen-1].decode('utf-8')\n"),
             );
             push_fmt(out, format_args!("{indent}offset += _slen\n"));
-            push_fmt(
-                out,
-                format_args!("{indent}_{list_name}.append(_elem)\n"),
-            );
+            push_fmt(out, format_args!("{indent}_{list_name}.append(_elem)\n"));
         }
     }
 
@@ -1748,10 +1695,7 @@ impl PythonGenerator {
         );
         push_fmt(out, format_args!("{indent}offset += 4\n"));
         push_fmt(out, format_args!("{indent}_inner_list = []\n"));
-        push_fmt(
-            out,
-            format_args!("{indent}for _ in range(_inner_len):\n"),
-        );
+        push_fmt(out, format_args!("{indent}for _ in range(_inner_len):\n"));
         let inner_indent = format!("{indent}    ");
         out.push_str(&Self::emit_decode_element(
             "inner_list",
@@ -1776,15 +1720,10 @@ impl PythonGenerator {
         if idx.structs.contains_key(&type_name) {
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}_elem, _read = {type_name}.decode_cdr2_le(data[offset:])\n"
-                ),
+                format_args!("{indent}_elem, _read = {type_name}.decode_cdr2_le(data[offset:])\n"),
             );
             push_fmt(out, format_args!("{indent}offset += _read\n"));
-            push_fmt(
-                out,
-                format_args!("{indent}_{list_name}.append(_elem)\n"),
-            );
+            push_fmt(out, format_args!("{indent}_{list_name}.append(_elem)\n"));
         } else if let Some(td) = idx.typedefs.get(&type_name) {
             out.push_str(&Self::emit_decode_element(
                 list_name,
@@ -1792,26 +1731,17 @@ impl PythonGenerator {
                 idx,
                 indent,
             ));
-        } else if idx.enums.contains_key(&type_name)
-            || idx.bitmasks.contains_key(&type_name)
-        {
+        } else if idx.enums.contains_key(&type_name) || idx.bitmasks.contains_key(&type_name) {
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}offset += (4 - (offset % 4)) % 4\n"
-                ),
+                format_args!("{indent}offset += (4 - (offset % 4)) % 4\n"),
             );
             push_fmt(
                 out,
-                format_args!(
-                    "{indent}_elem, = struct.unpack_from('<i', data, offset)\n"
-                ),
+                format_args!("{indent}_elem, = struct.unpack_from('<i', data, offset)\n"),
             );
             push_fmt(out, format_args!("{indent}offset += 4\n"));
-            push_fmt(
-                out,
-                format_args!("{indent}_{list_name}.append(_elem)\n"),
-            );
+            push_fmt(out, format_args!("{indent}_{list_name}.append(_elem)\n"));
         }
     }
 
@@ -2236,7 +2166,12 @@ impl PythonGenerator {
         };
         push_fmt(
             &mut out,
-            format_args!("{}_discriminator: {}{}\n", self.indent(), disc_ty, disc_default),
+            format_args!(
+                "{}_discriminator: {}{}\n",
+                self.indent(),
+                disc_ty,
+                disc_default
+            ),
         );
         push_fmt(
             &mut out,
@@ -3488,14 +3423,8 @@ mod tests {
             items_pos < from_type_pos,
             "IDL order: items before from_type"
         );
-        assert!(
-            from_type_pos < id_pos,
-            "IDL order: from_type before id"
-        );
-        assert!(
-            id_pos < label_pos,
-            "IDL order: id before label"
-        );
+        assert!(from_type_pos < id_pos, "IDL order: from_type before id");
+        assert!(id_pos < label_pos, "IDL order: id before label");
 
         // All fields must have defaults (so dataclass order doesn't matter)
         assert!(

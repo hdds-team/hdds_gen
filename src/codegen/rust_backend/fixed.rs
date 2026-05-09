@@ -45,17 +45,13 @@ impl RustGenerator {
         // delegators are emitted manually below (they can't go through
         // `RustGenerator::emit_cdr_trait_delegator` because `Fixed<D, S>`
         // carries const generics that helper does not format).
-        for (suffix, _version) in [
-            ("xcdr1", "Xcdr1"),
-            ("xcdr2", "Xcdr2"),
-        ] {
+        for (suffix, _version) in [("xcdr1", "Xcdr1"), ("xcdr2", "Xcdr2")] {
             output.push_str("impl<const D: u32, const S: u32> Fixed<D, S> {\n");
             output.push_str(&format!(
                 "    pub fn encode_{suffix}_le(&self, dst: &mut [u8]) -> Result<usize, CdrError> {{\n"
             ));
-            output.push_str(
-                "        if dst.len() < 16 { return Err(CdrError::BufferTooSmall); }\n",
-            );
+            output
+                .push_str("        if dst.len() < 16 { return Err(CdrError::BufferTooSmall); }\n");
             output.push_str("        dst[..16].copy_from_slice(&self.raw().to_le_bytes());\n");
             output.push_str("        Ok(16)\n");
             output.push_str("    }\n");
