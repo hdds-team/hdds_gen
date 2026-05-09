@@ -480,9 +480,14 @@ impl RustGenerator {
     /// Generate complete `TypeIdentifier` expression for a field type.
     ///
     /// For primitive types, returns `::hdds::xtypes::TypeIdentifier::TK_*`.
-    /// For named types (structs/enums), generates an inline `TypeIdentifier::Inline(...)`
-    /// embedding the full `CompleteTypeObject` so that `XTypes` auto-decode can
-    /// resolve the type hierarchy without a registry.
+    /// For named types (structs/enums), emits a `TypeIdentifier::Complete(hash)`
+    /// where the hash is computed at runtime from the nested `CompleteTypeObject`
+    /// and memoized via a block-scoped `OnceLock`. Per OMG DDS-XTypes v1.3
+    /// §7.3.4.4, only `EK_MINIMAL`/`EK_COMPLETE` hash references and the
+    /// `TI_*` plain-collection variants are spec-valid wire encodings for
+    /// nested types — embedding a full `CompleteTypeObject` inline (the
+    /// previous `TypeIdentifier::Inline(Box::new(...))` HDDS extension)
+    /// has no spec-compliant counterpart.
     fn emit_member_type_id(idl_type: &IdlType) -> String {
         use crate::types::PrimitiveType;
 
@@ -524,14 +529,40 @@ impl RustGenerator {
         }
     }
 
-    /// Generate an inline `TypeIdentifier::Inline(Box::new(...))` for a named type.
+    /// Generate a `TypeIdentifier::Complete(hash)` expression for a named type.
     ///
-    /// Looks up the type definition in the thread-local type index and generates
-    /// the appropriate `CompleteTypeObject` (Struct or Enumerated).
-    /// Falls back to `TK_UINT32` if the type is not found (e.g., typedefs).
+    /// Looks up the type definition in the thread-local type index, builds the
+    /// nested `CompleteTypeObject` inline, and computes its `EquivalenceHash`
+    /// at runtime, memoized through a block-scoped `OnceLock` so the hash is
+    /// computed exactly once per process per call site (D2 strategy validated
+    /// in Chantier 1.5 Phase 0 ADR §3.1). Falls back to `TK_UINT32` if the
+    /// type is not found (e.g., typedefs) or if a recursion cycle is detected.
+    ///
+    /// Output shape:
+    ///
+    /// ```text
+    /// {
+    ///     static __HASH: ::std::sync::OnceLock<::hdds::xtypes::EquivalenceHash> =
+    ///         ::std::sync::OnceLock::new();
+    ///     ::hdds::xtypes::TypeIdentifier::Complete(*__HASH.get_or_init(|| {
+    ///         let __nested_to = ::hdds::xtypes::CompleteTypeObject::Struct(...);
+    ///         __nested_to
+    ///             .compute_equivalence_hash()
+    ///             .expect("CDR2 encoding of nested CompleteTypeObject")
+    ///     }))
+    /// }
+    /// ```
+    ///
+    /// The block introduces a unique `static OnceLock` per call site (Rust
+    /// scopes statics to their enclosing block), so the same nested type
+    /// referenced from multiple parent fields keeps separate caches — this
+    /// is acceptable: the computed hash is identical, just redundantly
+    /// memoized once per occurrence.
     fn emit_inline_type_object(name: &str) -> String {
         // Cycle detection: if we are already emitting this type (recursive struct),
-        // return a placeholder to break infinite recursion.
+        // return a placeholder to break infinite codegen recursion. Self-
+        // referential IDL structs would otherwise expand indefinitely. Spec-
+        // compliant handling is `TI_STRONGLY_CONNECTED_COMPONENT` (Chantier 1.6).
         let is_cycle = EMITTING_TYPES.with(|set| set.borrow().contains(name));
         if is_cycle {
             return "::hdds::xtypes::TypeIdentifier::TK_UINT32".to_string();
@@ -548,112 +579,118 @@ impl RustGenerator {
 
         EMITTING_TYPES.with(|set| set.borrow_mut().insert(name.to_string()));
 
-        let result = match type_def {
-            helpers::TypeDef::Struct(s) => Self::emit_inline_struct_type_object(&s, &fqn),
-            helpers::TypeDef::Enum(e) => Self::emit_inline_enum_type_object(&e, &fqn),
+        let nested_type_object = match type_def {
+            helpers::TypeDef::Struct(s) => Self::emit_complete_struct_type_object(&s, &fqn),
+            helpers::TypeDef::Enum(e) => Self::emit_complete_enum_type_object(&e, &fqn),
         };
 
         EMITTING_TYPES.with(|set| set.borrow_mut().remove(name));
 
-        result
-    }
-
-    /// Generate inline `CompleteTypeObject::Struct(...)` for a named struct.
-    fn emit_inline_struct_type_object(s: &Struct, fqn: &str) -> String {
         let mut out = String::new();
-        out.push_str("::hdds::xtypes::TypeIdentifier::Inline(Box::new(\n");
-        out.push_str(
-            "                                    ::hdds::xtypes::CompleteTypeObject::Struct(\n",
-        );
-        out.push_str(
-            "                                        ::hdds::xtypes::CompleteStructType {\n",
-        );
-        out.push_str("                                            struct_flags: ::hdds::xtypes::StructTypeFlag::IS_FINAL,\n");
-        out.push_str("                                            header: ::hdds::xtypes::CompleteStructHeader {\n");
-        out.push_str("                                                base_type: None,\n");
-        push_fmt(&mut out, format_args!(
-            "                                                detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
-        ));
-        out.push_str("                                            },\n");
-        out.push_str("                                            member_seq: vec![\n");
-
-        for (idx, field) in s.fields.iter().enumerate() {
-            let inner_type_id = Self::emit_member_type_id(&field.field_type);
-            out.push_str("                                                ::hdds::xtypes::CompleteStructMember {\n");
-            out.push_str("                                                    common: ::hdds::xtypes::CommonStructMember {\n");
-            push_fmt(
-                &mut out,
-                format_args!(
-                    "                                                        member_id: {},\n",
-                    idx
-                ),
-            );
-            out.push_str("                                                        member_flags: ::hdds::xtypes::MemberFlag::empty(),\n");
-            push_fmt(
-                &mut out,
-                format_args!(
-                    "                                                        member_type_id: {},\n",
-                    inner_type_id
-                ),
-            );
-            out.push_str("                                                    },\n");
-            push_fmt(&mut out, format_args!(
-                "                                                    detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", field.name
-            ));
-            out.push_str("                                                },\n");
-        }
-
-        out.push_str("                                            ],\n");
-        out.push_str("                                        }\n");
-        out.push_str("                                    )\n");
-        out.push_str("                                ))");
+        out.push_str("{\n");
+        out.push_str("                                        static __HASH: ::std::sync::OnceLock<::hdds::xtypes::EquivalenceHash> = ::std::sync::OnceLock::new();\n");
+        out.push_str("                                        ::hdds::xtypes::TypeIdentifier::Complete(*__HASH.get_or_init(|| {\n");
+        out.push_str("                                            let __nested_to = ");
+        out.push_str(&nested_type_object);
+        out.push_str(";\n");
+        out.push_str("                                            __nested_to.compute_equivalence_hash().expect(\"CDR2 encoding of nested CompleteTypeObject\")\n");
+        out.push_str("                                        }))\n");
+        out.push_str("                                    }");
         out
     }
 
-    /// Generate inline `CompleteTypeObject::Enumerated(...)` for a named enum.
-    fn emit_inline_enum_type_object(e: &crate::ast::Enum, fqn: &str) -> String {
+    /// Generate the `::hdds::xtypes::CompleteTypeObject::Struct(...)` expression
+    /// for a named struct. The result is plugged into the `OnceLock` block
+    /// emitted by `emit_inline_type_object`.
+    fn emit_complete_struct_type_object(s: &Struct, fqn: &str) -> String {
         let mut out = String::new();
-        out.push_str("::hdds::xtypes::TypeIdentifier::Inline(Box::new(\n");
+        out.push_str("::hdds::xtypes::CompleteTypeObject::Struct(\n");
         out.push_str(
-            "                                    ::hdds::xtypes::CompleteTypeObject::Enumerated(\n",
+            "                                                ::hdds::xtypes::CompleteStructType {\n",
         );
-        out.push_str(
-            "                                        ::hdds::xtypes::CompleteEnumeratedType {\n",
-        );
-        out.push_str("                                            header: ::hdds::xtypes::CompleteEnumeratedHeader {\n");
-        out.push_str("                                                bit_bound: 32,\n");
+        out.push_str("                                                    struct_flags: ::hdds::xtypes::StructTypeFlag::IS_FINAL,\n");
+        out.push_str("                                                    header: ::hdds::xtypes::CompleteStructHeader {\n");
+        out.push_str("                                                        base_type: None,\n");
         push_fmt(&mut out, format_args!(
-            "                                                detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
+            "                                                        detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
         ));
-        out.push_str("                                            },\n");
-        out.push_str("                                            literal_seq: vec![\n");
+        out.push_str("                                                    },\n");
+        out.push_str("                                                    member_seq: vec![\n");
+
+        for (idx, field) in s.fields.iter().enumerate() {
+            let inner_type_id = Self::emit_member_type_id(&field.field_type);
+            out.push_str("                                                        ::hdds::xtypes::CompleteStructMember {\n");
+            out.push_str("                                                            common: ::hdds::xtypes::CommonStructMember {\n");
+            push_fmt(
+                &mut out,
+                format_args!(
+                    "                                                                member_id: {},\n",
+                    idx
+                ),
+            );
+            out.push_str("                                                                member_flags: ::hdds::xtypes::MemberFlag::empty(),\n");
+            push_fmt(
+                &mut out,
+                format_args!(
+                    "                                                                member_type_id: {},\n",
+                    inner_type_id
+                ),
+            );
+            out.push_str("                                                            },\n");
+            push_fmt(&mut out, format_args!(
+                "                                                            detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", field.name
+            ));
+            out.push_str("                                                        },\n");
+        }
+
+        out.push_str("                                                    ],\n");
+        out.push_str("                                                }\n");
+        out.push_str("                                            )");
+        out
+    }
+
+    /// Generate the `::hdds::xtypes::CompleteTypeObject::Enumerated(...)`
+    /// expression for a named enum. Plugged into the `OnceLock` block emitted
+    /// by `emit_inline_type_object` (see that function's docstring).
+    fn emit_complete_enum_type_object(e: &crate::ast::Enum, fqn: &str) -> String {
+        let mut out = String::new();
+        out.push_str("::hdds::xtypes::CompleteTypeObject::Enumerated(\n");
+        out.push_str(
+            "                                                ::hdds::xtypes::CompleteEnumeratedType {\n",
+        );
+        out.push_str("                                                    header: ::hdds::xtypes::CompleteEnumeratedHeader {\n");
+        out.push_str("                                                        bit_bound: 32,\n");
+        push_fmt(&mut out, format_args!(
+            "                                                        detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
+        ));
+        out.push_str("                                                    },\n");
+        out.push_str("                                                    literal_seq: vec![\n");
 
         for (idx, variant) in e.variants.iter().enumerate() {
             // @audit-ok: enum variant index always fits in i64
             let value = variant
                 .value
                 .unwrap_or_else(|| i64::try_from(idx).unwrap_or(0));
-            out.push_str("                                                ::hdds::xtypes::CompleteEnumeratedLiteral {\n");
-            out.push_str("                                                    common: ::hdds::xtypes::CommonEnumeratedLiteral {\n");
+            out.push_str("                                                        ::hdds::xtypes::CompleteEnumeratedLiteral {\n");
+            out.push_str("                                                            common: ::hdds::xtypes::CommonEnumeratedLiteral {\n");
             push_fmt(
                 &mut out,
                 format_args!(
-                    "                                                        value: {},\n",
+                    "                                                                value: {},\n",
                     value
                 ),
             );
-            out.push_str("                                                        flags: ::hdds::xtypes::EnumeratedLiteralFlag::empty(),\n");
-            out.push_str("                                                    },\n");
+            out.push_str("                                                                flags: ::hdds::xtypes::EnumeratedLiteralFlag::empty(),\n");
+            out.push_str("                                                            },\n");
             push_fmt(&mut out, format_args!(
-                "                                                    detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", variant.name
+                "                                                            detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", variant.name
             ));
-            out.push_str("                                                },\n");
+            out.push_str("                                                        },\n");
         }
 
-        out.push_str("                                            ],\n");
-        out.push_str("                                        }\n");
-        out.push_str("                                    )\n");
-        out.push_str("                                ))");
+        out.push_str("                                                    ],\n");
+        out.push_str("                                                }\n");
+        out.push_str("                                            )");
         out
     }
 
