@@ -558,9 +558,12 @@ fn container_outer_xcdr1_body_invokes_sub_xcdr1_not_cdr2() -> TestResult<()> {
     let xcdr2_body = &xcdr2_rest[..xcdr2_end];
 
     // The XCDR1 body must call the XCDR1 sub-encoder, never the legacy one.
+    // Post-1.6.1a-codegen-encode: the inner call routes through the
+    // offset-aware `_at` wrapper instead of the legacy sub-buffer pattern.
     assert!(
-        xcdr1_body.contains("elem.encode_xcdr1_le("),
-        "Outer::encode_xcdr1_le should invoke elem.encode_xcdr1_le(). Body:\n{xcdr1_body}"
+        xcdr1_body.contains("elem.encode_xcdr1_le_at(dst, &mut offset)"),
+        "Outer::encode_xcdr1_le should invoke elem.encode_xcdr1_le_at(dst, &mut offset). \
+         Body:\n{xcdr1_body}"
     );
     assert!(
         !xcdr1_body.contains("encode_cdr2_le"),
@@ -569,8 +572,9 @@ fn container_outer_xcdr1_body_invokes_sub_xcdr1_not_cdr2() -> TestResult<()> {
 
     // Same contract for the XCDR2 body.
     assert!(
-        xcdr2_body.contains("elem.encode_xcdr2_le("),
-        "Outer::encode_xcdr2_le should invoke elem.encode_xcdr2_le(). Body:\n{xcdr2_body}"
+        xcdr2_body.contains("elem.encode_xcdr2_le_at(dst, &mut offset)"),
+        "Outer::encode_xcdr2_le should invoke elem.encode_xcdr2_le_at(dst, &mut offset). \
+         Body:\n{xcdr2_body}"
     );
     assert!(
         !xcdr2_body.contains("encode_cdr2_le"),
@@ -686,18 +690,22 @@ fn union_xcdr1_encode_case_named_invokes_sub_xcdr1() -> TestResult<()> {
     let xcdr2_body = &xcdr2_rest[..xcdr2_end];
 
     // Each version's case-encoding of the Inner variant must call the
-    // matching version on the sub-type.
+    // matching version on the sub-type. Post-1.6.1a-codegen-encode: the
+    // inner call routes through the offset-aware `_at` wrapper instead
+    // of the legacy sub-buffer pattern.
     assert!(
-        xcdr1_body.contains("v.encode_xcdr1_le("),
-        "TaggedInner::encode_xcdr1_le should invoke v.encode_xcdr1_le(). Body:\n{xcdr1_body}"
+        xcdr1_body.contains("v.encode_xcdr1_le_at(dst, &mut offset)"),
+        "TaggedInner::encode_xcdr1_le should invoke v.encode_xcdr1_le_at(dst, &mut offset). \
+         Body:\n{xcdr1_body}"
     );
     assert!(
         !xcdr1_body.contains("encode_cdr2_le"),
         "TaggedInner::encode_xcdr1_le must not call legacy encode_cdr2_le. Body:\n{xcdr1_body}"
     );
     assert!(
-        xcdr2_body.contains("v.encode_xcdr2_le("),
-        "TaggedInner::encode_xcdr2_le should invoke v.encode_xcdr2_le(). Body:\n{xcdr2_body}"
+        xcdr2_body.contains("v.encode_xcdr2_le_at(dst, &mut offset)"),
+        "TaggedInner::encode_xcdr2_le should invoke v.encode_xcdr2_le_at(dst, &mut offset). \
+         Body:\n{xcdr2_body}"
     );
     assert!(
         !xcdr2_body.contains("encode_cdr2_le"),

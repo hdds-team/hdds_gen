@@ -409,20 +409,26 @@ impl RustGenerator {
     /// `encode_cdr2_le_at` is a REQUIRED trait method per DDS-XTypes v1.3
     /// §7.4.3.4.1 Tab.15 (offset-propagating entry point). The body is a
     /// trivial wrapper that calls `encode_cdr2_le` on a sub-slice and
-    /// advances the global cursor by the returned length. This is correct
-    /// at the top of an encode call chain (offset == 0, e.g. KeyHash
-    /// scratch buffer in `emit_dds_trait_impl`) and for trait-API consumers
-    /// that hold a fresh buffer. For nested struct usage where the outer
-    /// type passes a non-zero global offset, the trivial wrapper still
-    /// compiles correctly but the inner inherent encoder reasons about
-    /// alignment against the local sub-slice origin (0), not the global
-    /// position; an 8-byte primitive inside the inner type therefore
-    /// follows the inner's local alignment rule rather than the outer's
-    /// running cursor. This residual F01 surface is intentionally left to
-    /// a follow-up sub-commit (`1.6.1a-codegen-encode`) that lifts the
-    /// inherent encoder bodies onto the global cursor; the trait method
-    /// is added here so the workspace compiles and the API contract
-    /// matches the runtime trait definition in `hdds`.
+    /// advances the global cursor by the returned length. This routes to
+    /// the inherent `encode_xcdrN_le`, which is the actual encoder body.
+    /// The inherent `encode_xcdrN_le_at` emitted by
+    /// `RustGenerator::emit_encode_at_wrapper` is a parallel trivial
+    /// wrapper over the same `encode_xcdrN_le` inherent — so calling
+    /// either trait method or inherent `_at` ultimately reaches the same
+    /// encoder body via a one-step sub-buffer slice.
+    ///
+    /// Inner-field call sites in struct/union/container templates use the
+    /// offset-aware inherent `encode_xcdrN_le_at` so the global cursor
+    /// propagates uniformly through nested types at the call-site level.
+    /// Sub-buffer slicing is now confined to two trivial wrappers (the
+    /// trait delegator emitted here and the inherent `_at` wrapper) plus
+    /// `Fixed<D, S>`'s manually-inlined version of the same pattern.
+    ///
+    /// The inherent encoder bodies (`encode_xcdrN_le`) still compute
+    /// alignment from a local `offset` cursor that starts at 0; lifting
+    /// those bodies onto the global cursor (making the body operate on
+    /// `*offset` directly) is a deeper refactor that closes the residual
+    /// F01 surface for non-aligned outer offsets and is tracked separately.
     ///
     /// This is shared between struct and union codegen (2.2-a emits for
     /// structs, 2.2-c will emit for unions).

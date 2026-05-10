@@ -67,6 +67,19 @@ impl RustGenerator {
             );
             output.push_str("        Ok((Fixed::<D, S>::from_raw(raw), 16))\n");
             output.push_str("    }\n");
+            // Inherent encode_xcdrN_le_at trivial wrapper. Mirrors the helper
+            // emitted by Self::emit_encode_at_wrapper but inlined here because
+            // Fixed<D, S> carries const generics that the shared helper
+            // signature does not format. Keep in sync with the shared helper.
+            output.push_str(&format!(
+                "    pub fn encode_{suffix}_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {{\n"
+            ));
+            output.push_str(&format!(
+                "        let len = self.encode_{suffix}_le(&mut dst[*offset..])?;\n"
+            ));
+            output.push_str("        *offset += len;\n");
+            output.push_str("        Ok(())\n");
+            output.push_str("    }\n");
             output.push_str("}\n\n");
         }
 

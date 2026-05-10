@@ -76,29 +76,26 @@ impl RustGenerator {
                 push_fmt(
                     dst,
                     format_args!(
-                        "            let used = elem.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "            elem.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
                 );
-                dst.push_str("            offset += used;\n");
                 dst.push_str("            let elem_len = u32::try_from(offset - (elem_start + 4)).map_err(|_| CdrError::InvalidEncoding)?;\n");
                 dst.push_str("            dst[elem_start..elem_start+4].copy_from_slice(&elem_len.to_le_bytes());\n");
             } else {
                 push_fmt(
                     dst,
                     format_args!(
-                        "            let used = elem.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "            elem.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
                 );
-                dst.push_str("            offset += used;\n");
             }
         } else {
             push_fmt(
                 dst,
                 format_args!(
-                    "            let used = elem.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                    "            elem.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                 ),
             );
-            dst.push_str("            offset += used;\n");
         }
         dst.push_str("        }\n\n");
     }
@@ -174,10 +171,9 @@ impl RustGenerator {
                 push_fmt(
                     dst,
                     format_args!(
-                        "            let used = elem.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "            elem.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
                 );
-                dst.push_str("            offset += used;\n");
             }
             dst.push_str("        }\n\n");
         }
@@ -300,10 +296,9 @@ impl RustGenerator {
                     push_fmt(
                         dst,
                         format_args!(
-                            "{indent}let used = {expr}.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                            "{indent}{expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                         ),
                     );
-                    push_fmt(dst, format_args!("{indent}offset += used;\n"));
                 }
             }
             return;
@@ -343,10 +338,9 @@ impl RustGenerator {
             push_fmt(
                 dst,
                 format_args!(
-                    "{indent}let used = {expr}.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                    "{indent}{expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                 ),
             );
-            push_fmt(dst, format_args!("{indent}offset += used;\n"));
         }
     }
 }

@@ -258,6 +258,7 @@ impl RustGenerator {
             ),
         );
         push_fmt(&mut code, format_args!("{indent}    }}\n"));
+        code.push_str(&Self::emit_encode_at_wrapper(suffix, indent));
         push_fmt(&mut code, format_args!("{indent}}}\n\n"));
 
         code
@@ -584,12 +585,8 @@ impl RustGenerator {
                 push_fmt(
                     &mut code,
                     format_args!(
-                        "{indent}                let n = {var}.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "{indent}                {var}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
-                );
-                push_fmt(
-                    &mut code,
-                    format_args!("{indent}                offset += n;\n"),
                 );
             }
             IdlType::Sequence { inner, .. } => {

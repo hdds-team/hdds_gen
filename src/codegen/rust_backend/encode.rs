@@ -136,9 +136,37 @@ impl RustGenerator {
 
         push_fmt(&mut code, format_args!("        {size_expr}\n"));
         code.push_str("    }\n");
+        code.push_str(&Self::emit_encode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
+    }
+
+    /// Emit a trivial `encode_{suffix}_le_at` wrapper that forwards to the
+    /// inherent `encode_{suffix}_le` on a sub-slice of the parent buffer.
+    /// The wrapper exists so that outer encoders can use the offset-aware
+    /// pattern `inner.encode_{suffix}_le_at(buf, &mut offset)?` instead of
+    /// the legacy `let used = inner.encode_{suffix}_le(&mut buf[offset..])?;
+    /// offset += used;` sub-buffer pattern at call sites — uniform API
+    /// across all generated types.
+    ///
+    /// This wrapper is functionally identical to the legacy pattern at the
+    /// wire level. The deeper F01 (cdr2_alignment systemic) fix that lifts
+    /// the inherent body onto a global cursor is intentionally out of
+    /// scope for the present sub-commit (`1.6.1a-codegen-encode`); see the
+    /// docstring on `emit_cdr_trait_delegator` for rationale.
+    pub(super) fn emit_encode_at_wrapper(suffix: &str, indent: &str) -> String {
+        format!(
+            "{indent}    pub fn encode_{suffix}_le_at(\n\
+             {indent}        &self,\n\
+             {indent}        dst: &mut [u8],\n\
+             {indent}        offset: &mut usize,\n\
+             {indent}    ) -> Result<(), CdrError> {{\n\
+             {indent}        let len = self.encode_{suffix}_le(&mut dst[*offset..])?;\n\
+             {indent}        *offset += len;\n\
+             {indent}        Ok(())\n\
+             {indent}    }}\n"
+        )
     }
 
     fn emit_encode_field(field: &Field, version: CdrVersion) -> String {
@@ -230,14 +258,16 @@ impl RustGenerator {
             _ => {
                 // Named, Sequence, Array, Map - delegate to the versioned
                 // inherent encoder emitted on the sub-type by this codegen.
+                // Use the offset-aware `_at` API so the cursor propagates
+                // uniformly through nested types.
                 let suffix = super::helpers::xcdr_method_suffix(version);
                 push_fmt(
                     &mut code,
                     format_args!(
-                        "            let used = value.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "            value.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
                 );
-                code.push_str("            offset += used;\n\n");
+                code.push('\n');
             }
         }
 
@@ -334,6 +364,7 @@ impl RustGenerator {
         }
         push_fmt(&mut code, format_args!("        {size_expr}\n"));
         code.push_str("    }\n");
+        code.push_str(&Self::emit_encode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
@@ -483,10 +514,9 @@ impl RustGenerator {
                             push_fmt(
                                 &mut code,
                                 format_args!(
-                                    "            let used = elem.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                                    "            elem.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                                 ),
                             );
-                            code.push_str("            offset += used;\n");
                             code.push_str("            let elem_len = u32::try_from(offset - (elem_start + 4)).map_err(|_| CdrError::InvalidEncoding)?;\n");
                             code.push_str(
                                 "            dst[elem_start..elem_start+4].copy_from_slice(&elem_len.to_le_bytes());\n",
@@ -501,11 +531,11 @@ impl RustGenerator {
                             push_fmt(
                                 &mut code,
                                 format_args!(
-                                    "        let used = {value_expr}.encode_{suffix}_le(&mut dst[offset..])?;\n",
+                                    "        {value_expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n",
                                     value_expr = value_expr
                                 ),
                             );
-                            code.push_str("        offset += used;\n\n");
+                            code.push('\n');
                         }
                     } else {
                         let value_expr = if field.is_optional() {
@@ -516,11 +546,11 @@ impl RustGenerator {
                         push_fmt(
                             &mut code,
                             format_args!(
-                                "        let used = {value_expr}.encode_{suffix}_le(&mut dst[offset..])?;\n",
+                                "        {value_expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n",
                                 value_expr = value_expr
                             ),
                         );
-                        code.push_str("        offset += used;\n\n");
+                        code.push('\n');
                     }
                 }
                 _ => {
@@ -544,11 +574,11 @@ impl RustGenerator {
                     push_fmt(
                         &mut code,
                         format_args!(
-                            "        let used = {value_expr}.encode_{suffix}_le(&mut dst[offset..])?;\n",
+                            "        {value_expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n",
                             value_expr = value_expr
                         ),
                     );
-                    code.push_str("        offset += used;\n\n");
+                    code.push('\n');
                 }
             }
 
@@ -614,6 +644,7 @@ impl RustGenerator {
         }
         code.push_str("        size\n");
         code.push_str("    }\n");
+        code.push_str(&Self::emit_encode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
@@ -784,10 +815,10 @@ impl RustGenerator {
                 push_fmt(
                     &mut out,
                     format_args!(
-                        "{indent}let used = {expr}.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                        "{indent}{expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
                     ),
                 );
-                push_fmt(&mut out, format_args!("{indent}offset += used;\n\n"));
+                push_fmt(&mut out, format_args!("{indent}\n"));
             }
             PrimitiveType::Void => {}
         }
@@ -1060,10 +1091,10 @@ impl RustGenerator {
         push_fmt(
             dst,
             format_args!(
-                "        let used = self.{field_name}.encode_{suffix}_le(&mut dst[offset..])?;\n"
+                "        self.{field_name}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
             ),
         );
-        dst.push_str("        offset += used;\n\n");
+        dst.push('\n');
     }
 
     pub(super) fn encode_buffer_check(dst: &mut String, indent: &str, size_expr: &str) {
