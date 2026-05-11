@@ -108,23 +108,27 @@ fn emit_encode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) || idx.unions.contains_key(&type_ident) {
+                // F01-spec-correct: propagate global offset via `_at` API
+                // instead of slicing the destination buffer (which loses the
+                // outer alignment context inside the callee).
                 format!(
                     "{indent}{{\n\
-                     {indent}    int bytes = {value}.encode_cdr2_le(dst + offset, len - offset);\n\
-                     {indent}    if (bytes < 0) return -1;\n\
-                     {indent}    offset += static_cast<std::size_t>(bytes);\n\
+                     {indent}    int err = {value}.encode_cdr2_le_at(dst, len, offset);\n\
+                     {indent}    if (err) return err;\n\
                      {indent}}}\n",
                     indent = indent,
                     value = value_expr
                 )
             } else if idx.bitsets.contains_key(&type_ident) {
-                // Bitsets are structs with bitfields - use to_uint64() method
-                encode_scalar(indent, 8, 8, &format!("({}).to_uint64()", value_expr))
+                // Bitsets are structs with bitfields - use to_uint64() method.
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
+                encode_scalar(indent, 4, 8, &format!("({}).to_uint64()", value_expr))
             } else if idx.bitmasks.contains_key(&type_ident) {
-                // Bitmasks are enum class : uint64_t - use static_cast
+                // Bitmasks are enum class : uint64_t - use static_cast.
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
                 encode_scalar(
                     indent,
-                    8,
+                    4,
                     8,
                     &format!("static_cast<std::uint64_t>({})", value_expr),
                 )
@@ -159,7 +163,7 @@ fn encode_scalar(indent: &str, align: usize, size: usize, value_expr: &str) -> S
             _ => "std::uint64_t",
         };
         format!(
-            "{indent}offset = cdr2::align_offset(offset, {align});\n\
+            "{indent}if (!cdr2::pad_to_align(dst, offset, len, {align})) return -1;\n\
              {indent}if (!cdr2::can_write(len, offset, {size})) return -1;\n\
              {indent}{{\n\
              {indent}    {type_name} tmp = {value};\n\
@@ -174,7 +178,7 @@ fn encode_scalar(indent: &str, align: usize, size: usize, value_expr: &str) -> S
         )
     } else {
         format!(
-            "{indent}offset = cdr2::align_offset(offset, {align});\n\
+            "{indent}if (!cdr2::pad_to_align(dst, offset, len, {align})) return -1;\n\
              {indent}if (!cdr2::can_write(len, offset, {size})) return -1;\n\
              {indent}std::memcpy(dst + offset, &({value}), {size});\n\
              {indent}offset += {size};\n",
@@ -188,7 +192,7 @@ fn encode_scalar(indent: &str, align: usize, size: usize, value_expr: &str) -> S
 
 fn encode_string(indent: &str, value_expr: &str) -> String {
     format!(
-        "{indent}offset = cdr2::align_offset(offset, 4);\n\
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;\n\
          {indent}{{\n\
          {indent}    std::uint32_t str_len = static_cast<std::uint32_t>({value}.size() + 1);\n\
          {indent}    if (!cdr2::can_write(len, offset, 4 + str_len)) return -1;\n\
@@ -204,7 +208,7 @@ fn encode_string(indent: &str, value_expr: &str) -> String {
 
 fn encode_wstring(indent: &str, value_expr: &str) -> String {
     format!(
-        "{indent}offset = cdr2::align_offset(offset, 4);\n\
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;\n\
          {indent}{{\n\
          {indent}    std::uint32_t byte_len = static_cast<std::uint32_t>(({value}.size() + 1) * sizeof(wchar_t));\n\
          {indent}    if (!cdr2::can_write(len, offset, 4 + byte_len)) return -1;\n\
@@ -220,7 +224,7 @@ fn encode_wstring(indent: &str, value_expr: &str) -> String {
 
 fn encode_wchar(indent: &str, value_expr: &str) -> String {
     format!(
-        "{indent}offset = cdr2::align_offset(offset, 4);\n\
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;\n\
          {indent}if (!cdr2::can_write(len, offset, 4)) return -1;\n\
          {indent}{{\n\
          {indent}    std::uint32_t wc = static_cast<std::uint32_t>({value});\n\
@@ -235,7 +239,7 @@ fn encode_wchar(indent: &str, value_expr: &str) -> String {
 
 fn encode_fixed(indent: &str, value_expr: &str) -> String {
     format!(
-        "{indent}offset = cdr2::align_offset(offset, 4);\n\
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;\n\
          {indent}if (!cdr2::can_write(len, offset, 16)) return -1;\n\
          {indent}{{\n\
          {indent}    auto bytes = {value}.to_le_bytes();\n\
@@ -259,7 +263,10 @@ fn encode_array(
     let var = loop_var(depth);
     let mut out = String::new();
     let align = idx.align_of(inner);
-    let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, {align});");
+    let _ = writeln!(
+        out,
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, {align})) return -1;"
+    );
     let _ = writeln!(
         out,
         "{indent}for (std::size_t {var} = 0; {var} < {size}; ++{var}) {{"
@@ -288,7 +295,10 @@ fn encode_sequence(
 ) -> String {
     let var = loop_var(depth);
     let mut out = String::new();
-    let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, 4);");
+    let _ = writeln!(
+        out,
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;"
+    );
     let _ = write!(
         out,
         "{indent}{{\n\
@@ -331,7 +341,10 @@ fn encode_map(
     depth: u32,
 ) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "{indent}offset = cdr2::align_offset(offset, 4);");
+    let _ = writeln!(
+        out,
+        "{indent}if (!cdr2::pad_to_align(dst, offset, len, 4)) return -1;"
+    );
     let _ = write!(
         out,
         "{indent}{{\n\

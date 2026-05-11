@@ -108,12 +108,17 @@ impl<'a> DefinitionIndex<'a> {
                 | PrimitiveType::WString
                 | PrimitiveType::Void
                 | PrimitiveType::Fixed { .. } => 4,
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4),
+                // not 8. Used by `encode_array` to pre-align before the loop;
+                // mismatched value here would make `array<double>` /
+                // `array<int64>` re-introduce the F01 alignment bug through
+                // a different code path than `primitive_scalar_layout`.
                 PrimitiveType::LongLong
                 | PrimitiveType::Int64
                 | PrimitiveType::UnsignedLongLong
                 | PrimitiveType::UInt64
                 | PrimitiveType::Double
-                | PrimitiveType::LongDouble => 8,
+                | PrimitiveType::LongDouble => 4,
             },
             IdlType::Sequence { .. } | IdlType::Map { .. } => 4,
             IdlType::Array { inner, .. } => self.align_of(inner),

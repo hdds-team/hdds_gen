@@ -263,9 +263,7 @@ impl RustGenerator {
                 let suffix = super::helpers::xcdr_method_suffix(version);
                 push_fmt(
                     &mut code,
-                    format_args!(
-                        "            value.encode_{suffix}_le_at(dst, &mut offset)?;\n"
-                    ),
+                    format_args!("            value.encode_{suffix}_le_at(dst, &mut offset)?;\n"),
                 );
                 code.push('\n');
             }
@@ -814,9 +812,7 @@ impl RustGenerator {
                 };
                 push_fmt(
                     &mut out,
-                    format_args!(
-                        "{indent}{expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
-                    ),
+                    format_args!("{indent}{expr}.encode_{suffix}_le_at(dst, &mut offset)?;\n"),
                 );
                 push_fmt(&mut out, format_args!("{indent}\n"));
             }
@@ -1090,9 +1086,7 @@ impl RustGenerator {
         );
         push_fmt(
             dst,
-            format_args!(
-                "        self.{field_name}.encode_{suffix}_le_at(dst, &mut offset)?;\n"
-            ),
+            format_args!("        self.{field_name}.encode_{suffix}_le_at(dst, &mut offset)?;\n"),
         );
         dst.push('\n');
     }

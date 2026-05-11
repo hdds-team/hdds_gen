@@ -122,8 +122,12 @@ fn emit_decode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) || idx.unions.contains_key(&type_ident) {
+                // TRANSITIONAL: encode side migrated to `_at` in hddsgen 1.6.1e;
+                // decode is deferred to sub-chantier 1.6.11. Symmetric F01-class
+                // bug on the read path until then. See decode.rs TODO comment.
                 format!(
                     "{indent}{{\n\
+                     {indent}    // TODO(hddsgen 1.6.11): migrate to decode_cdr2_le_at to match encode side.\n\
                      {indent}    int bytes = {value}.decode_cdr2_le(src + offset, len - offset);\n\
                      {indent}    if (bytes < 0) return -1;\n\
                      {indent}    offset += static_cast<std::size_t>(bytes);\n\

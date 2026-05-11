@@ -265,8 +265,15 @@ fn emit_decode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) {
+                // TRANSITIONAL: encode side migrated to `_at` in hddsgen 1.6.1e;
+                // decode is deferred to sub-chantier 1.6.11. Until then this
+                // caller still uses the sub-buffer slice form, which is the
+                // F01-class bug on the read path — symmetric to the original
+                // encode bug. Safe in practice only when the inner struct's
+                // first member has alignment <= 4 (which the cap-4 rule
+                // guarantees for primitives but not for nested sequences).
                 format!(
-                    "{indent}{{ int e = {fname}_decode_cdr2_le({ptr}, src + offset, len - offset); if (e < 0) return e; err = cdr_add(&offset, (size_t)e); if (err) return err; }}\n",
+                    "{indent}/* TODO(hddsgen 1.6.11): migrate to {fname}_decode_cdr2_le_at to match encode side. */\n{indent}{{ int e = {fname}_decode_cdr2_le({ptr}, src + offset, len - offset); if (e < 0) return e; err = cdr_add(&offset, (size_t)e); if (err) return err; }}\n",
                     indent = indent,
                     fname = c_name(&type_ident),
                     ptr = ptr_expr

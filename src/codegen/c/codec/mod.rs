@@ -43,12 +43,15 @@ const fn primitive_scalar_layout(prim: &PrimitiveType) -> Option<PrimitiveScalar
         | PrimitiveType::UInt32
         | PrimitiveType::Float
         | PrimitiveType::WChar => Some(PrimitiveScalar { align: 4, width: 4 }),
+        // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4),
+        // not 8. Mirrors `impl_cdr2_primitive!` (1.6.1a-impls-macro) on the
+        // Rust side. Pre-1.6.1e value was `align: 8` (F01 systemic bug).
         PrimitiveType::LongLong
         | PrimitiveType::Int64
         | PrimitiveType::UnsignedLongLong
         | PrimitiveType::UInt64
         | PrimitiveType::Double
-        | PrimitiveType::LongDouble => Some(PrimitiveScalar { align: 8, width: 8 }),
+        | PrimitiveType::LongDouble => Some(PrimitiveScalar { align: 4, width: 8 }),
         PrimitiveType::Fixed { .. } => Some(PrimitiveScalar {
             align: 4,
             width: 16,

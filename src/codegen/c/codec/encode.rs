@@ -275,8 +275,11 @@ fn emit_encode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) {
+                // F01-spec-correct: propagate global offset via `_at` API
+                // instead of slicing the destination buffer (which loses the
+                // outer alignment context inside the callee).
                 format!(
-                    "{indent}{{ int e = {fname}_encode_cdr2_le({ptr}, dst + offset, len - offset); if (e < 0) return e; err = cdr_add(&offset, (size_t)e); if (err) return err; }}\n",
+                    "{indent}{{ int e = {fname}_encode_cdr2_le_at({ptr}, dst, len, &offset); if (e) return e; }}\n",
                     indent = indent,
                     fname = c_name(&type_ident),
                     ptr = ptr_expr
@@ -284,7 +287,8 @@ fn emit_encode_type(
             } else if idx.bitsets.contains_key(&type_ident)
                 || idx.bitmasks.contains_key(&type_ident)
             {
-                encode_scalar(indent, 8, 8, ptr_expr)
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
+                encode_scalar(indent, 4, 8, ptr_expr)
             } else if idx.enums.contains_key(&type_ident) {
                 encode_scalar(indent, 4, 4, ptr_expr)
             } else if let Some(td) = idx.typedefs.get(&type_ident) {

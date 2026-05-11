@@ -148,12 +148,15 @@ const fn primitive_scalar_layout(prim: &PrimitiveType) -> Option<PrimitiveScalar
         | PrimitiveType::UInt32
         | PrimitiveType::Float
         | PrimitiveType::WChar => Some(PrimitiveScalar { align: 4, width: 4 }),
+        // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4),
+        // not 8. Mirrors `impl_cdr2_primitive!` (1.6.1a-impls-macro) on the
+        // Rust side. Pre-1.6.1e value was `align: 8` (F01 systemic bug).
         PrimitiveType::LongLong
         | PrimitiveType::Int64
         | PrimitiveType::UnsignedLongLong
         | PrimitiveType::UInt64
         | PrimitiveType::Double
-        | PrimitiveType::LongDouble => Some(PrimitiveScalar { align: 8, width: 8 }),
+        | PrimitiveType::LongDouble => Some(PrimitiveScalar { align: 4, width: 8 }),
         PrimitiveType::Fixed { .. } => Some(PrimitiveScalar {
             align: 4,
             width: 16,
@@ -200,20 +203,19 @@ fn generate_final_codec(
 ) -> String {
     let mut out = String::new();
 
-    // encode_cdr2_le method
+    // encode_cdr2_le_at method (offset-propagating, F01-spec-correct)
     let _ = writeln!(
         out,
-        "{indent}/// Encode this struct to CDR2 little-endian format"
+        "{indent}/// Encode this struct to CDR2 little-endian format, propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes written, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
     for field in &s.fields {
         out.push_str(&encode::emit_encode_field_compat(
             field,
@@ -222,6 +224,24 @@ fn generate_final_codec(
             fastdds_compat,
         ));
     }
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.1e API; preserved for back-compat with PubSubType)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}\n");
 
@@ -262,20 +282,19 @@ fn generate_appendable_codec(
 ) -> String {
     let mut out = String::new();
 
-    // encode_cdr2_le method with DHEADER
+    // encode_cdr2_le_at method with DHEADER (offset-propagating)
     let _ = writeln!(
         out,
-        "{indent}/// Encode this struct to CDR2 little-endian format (APPENDABLE with DHEADER)"
+        "{indent}/// Encode this struct to CDR2 little-endian format (APPENDABLE with DHEADER), propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes written, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
     // Reserve space for DHEADER (4 bytes)
     let _ = writeln!(
         out,
@@ -308,6 +327,24 @@ fn generate_appendable_codec(
         out,
         "{indent}    std::memcpy(dst + dheader_pos, &payload_size, 4);"
     );
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.1e API)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}\n");
 
@@ -376,20 +413,19 @@ fn generate_mutable_codec(
 ) -> String {
     let mut out = String::new();
 
-    // encode_cdr2_le method with DHEADER + EMHEADER
+    // encode_cdr2_le_at method with DHEADER + EMHEADER (offset-propagating)
     let _ = writeln!(
         out,
-        "{indent}/// Encode this struct to CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER)"
+        "{indent}/// Encode this struct to CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER), propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes written, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
     // Reserve space for DHEADER (4 bytes)
     let _ = writeln!(
         out,
@@ -538,6 +574,24 @@ fn generate_mutable_codec(
         out,
         "{indent}    std::memcpy(dst + dheader_pos, &payload_size, 4);"
     );
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.1e API)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}\n");
 
@@ -748,6 +802,17 @@ namespace cdr2 {
 
 inline std::size_t align_offset(std::size_t offset, std::size_t alignment) noexcept {
     return (offset + alignment - 1) & ~(alignment - 1);
+}
+
+// XCDR2 §7.4.3.4.2: padding bytes MUST be zero. `align_offset` alone only
+// advances the position; the gap between the old and new offset must be
+// explicitly zero-filled here. Returns false if the aligned position
+// overflows the destination buffer.
+inline bool pad_to_align(std::uint8_t* dst, std::size_t& offset, std::size_t len, std::size_t alignment) noexcept {
+    std::size_t aligned = (offset + alignment - 1) & ~(alignment - 1);
+    if (aligned > len) { return false; }
+    while (offset < aligned) { dst[offset++] = 0; }
+    return true;
 }
 
 inline bool can_write(std::size_t len, std::size_t offset, std::size_t bytes) noexcept {
