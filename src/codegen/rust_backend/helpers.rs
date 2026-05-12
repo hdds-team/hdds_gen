@@ -406,25 +406,26 @@ impl RustGenerator {
     /// XCDR v2 encoders. The target of the delegation is the type's
     /// `@data_representation` annotation (`@XCDR1` -> Xcdr1, otherwise Xcdr2).
     ///
-    /// `encode_cdr2_le_at` is a REQUIRED trait method per DDS-XTypes v1.3
-    /// §7.4.3.4.1 Tab.15 (offset-propagating entry point). The body is a
-    /// trivial wrapper that calls `encode_cdr2_le` on a sub-slice and
-    /// advances the global cursor by the returned length. This routes to
-    /// the inherent `encode_xcdrN_le`, which is the actual encoder body.
-    /// The inherent `encode_xcdrN_le_at` emitted by
-    /// `RustGenerator::emit_encode_at_wrapper` is a parallel trivial
-    /// wrapper over the same `encode_xcdrN_le` inherent — so calling
-    /// either trait method or inherent `_at` ultimately reaches the same
-    /// encoder body via a one-step sub-buffer slice.
+    /// `encode_cdr2_le_at` and `decode_cdr2_le_at` are REQUIRED trait methods
+    /// per DDS-XTypes v1.3 §7.4.3.4.1 Tab.15 (offset-propagating entry
+    /// points). Both bodies are trivial wrappers that call the legacy
+    /// `_le` method on a sub-slice and advance the global cursor by the
+    /// returned length. This routes to the inherent `(en|de)code_xcdrN_le`,
+    /// which is the actual codec body. The inherent `(en|de)code_xcdrN_le_at`
+    /// emitted by `RustGenerator::emit_{encode,decode}_at_wrapper` are
+    /// parallel trivial wrappers — so calling either trait method or
+    /// inherent `_at` ultimately reaches the same codec body via a
+    /// one-step sub-buffer slice.
     ///
     /// Inner-field call sites in struct/union/container templates use the
-    /// offset-aware inherent `encode_xcdrN_le_at` so the global cursor
+    /// offset-aware inherent `(en|de)code_xcdrN_le_at` so the global cursor
     /// propagates uniformly through nested types at the call-site level.
-    /// Sub-buffer slicing is now confined to two trivial wrappers (the
-    /// trait delegator emitted here and the inherent `_at` wrapper) plus
-    /// `Fixed<D, S>`'s manually-inlined version of the same pattern.
+    /// Sub-buffer slicing is now confined to two trivial wrappers per
+    /// direction (the trait delegator emitted here and the inherent `_at`
+    /// wrapper) plus `Fixed<D, S>`'s manually-inlined version of the same
+    /// pattern.
     ///
-    /// The inherent encoder bodies (`encode_xcdrN_le`) still compute
+    /// The inherent codec bodies (`(en|de)code_xcdrN_le`) still compute
     /// alignment from a local `offset` cursor that starts at 0; lifting
     /// those bodies onto the global cursor (making the body operate on
     /// `*offset` directly) is a deeper refactor that closes the residual
@@ -458,6 +459,15 @@ impl RustGenerator {
              impl Cdr2Decode for {name} {{\n\
              \u{20}   fn decode_cdr2_le(src: &[u8]) -> Result<(Self, usize), CdrError> {{\n\
              \u{20}       Self::decode_{suffix}_le(src)\n\
+             \u{20}   }}\n\
+             \n\
+             \u{20}   fn decode_cdr2_le_at(\n\
+             \u{20}       src: &[u8],\n\
+             \u{20}       offset: &mut usize,\n\
+             \u{20}   ) -> Result<Self, CdrError> {{\n\
+             \u{20}       let (value, used) = Self::decode_{suffix}_le(&src[*offset..])?;\n\
+             \u{20}       *offset += used;\n\
+             \u{20}       Ok(value)\n\
              \u{20}   }}\n\
              }}\n\
              \n"

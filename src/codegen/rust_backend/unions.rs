@@ -371,6 +371,7 @@ impl RustGenerator {
 
         push_fmt(&mut code, format_args!("{indent}        }}\n"));
         push_fmt(&mut code, format_args!("{indent}    }}\n"));
+        code.push_str(&Self::emit_decode_at_wrapper(suffix, indent));
         push_fmt(&mut code, format_args!("{indent}}}\n\n"));
 
         code

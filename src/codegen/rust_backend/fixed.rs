@@ -67,10 +67,12 @@ impl RustGenerator {
             );
             output.push_str("        Ok((Fixed::<D, S>::from_raw(raw), 16))\n");
             output.push_str("    }\n");
-            // Inherent encode_xcdrN_le_at trivial wrapper. Mirrors the helper
-            // emitted by Self::emit_encode_at_wrapper but inlined here because
-            // Fixed<D, S> carries const generics that the shared helper
-            // signature does not format. Keep in sync with the shared helper.
+            // Inherent encode_xcdrN_le_at + decode_xcdrN_le_at trivial
+            // wrappers. Mirror the helpers emitted by
+            // Self::emit_encode_at_wrapper + Self::emit_decode_at_wrapper but
+            // inlined here because Fixed<D, S> carries const generics that the
+            // shared helper signatures do not format. Keep in sync with the
+            // shared helpers.
             output.push_str(&format!(
                 "    pub fn encode_{suffix}_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {{\n"
             ));
@@ -79,6 +81,15 @@ impl RustGenerator {
             ));
             output.push_str("        *offset += len;\n");
             output.push_str("        Ok(())\n");
+            output.push_str("    }\n");
+            output.push_str(&format!(
+                "    pub fn decode_{suffix}_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {{\n"
+            ));
+            output.push_str(&format!(
+                "        let (value, used) = Self::decode_{suffix}_le(&src[*offset..])?;\n"
+            ));
+            output.push_str("        *offset += used;\n");
+            output.push_str("        Ok(value)\n");
             output.push_str("    }\n");
             output.push_str("}\n\n");
         }
@@ -104,6 +115,13 @@ impl RustGenerator {
         output.push_str("impl<const D: u32, const S: u32> Cdr2Decode for Fixed<D, S> {\n");
         output.push_str("    fn decode_cdr2_le(src: &[u8]) -> Result<(Self, usize), CdrError> {\n");
         output.push_str("        Self::decode_xcdr2_le(src)\n");
+        output.push_str("    }\n");
+        output.push_str(
+            "    fn decode_cdr2_le_at(src: &[u8], offset: &mut usize) -> Result<Self, CdrError> {\n",
+        );
+        output.push_str("        let (value, used) = Self::decode_xcdr2_le(&src[*offset..])?;\n");
+        output.push_str("        *offset += used;\n");
+        output.push_str("        Ok(value)\n");
         output.push_str("    }\n");
         output.push_str("}\n");
         output.push('\n');

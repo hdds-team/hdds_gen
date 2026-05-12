@@ -221,6 +221,7 @@ impl RustGenerator {
             );
             push_fmt(dst, format_args!("{indent}    }}\n"));
             dst.push_str(&Self::emit_encode_at_wrapper(suffix, &indent));
+            dst.push_str(&Self::emit_decode_at_wrapper(suffix, &indent));
             push_fmt(dst, format_args!("{indent}}}\n"));
         }
 

@@ -953,6 +953,147 @@ fn dds_keyhash_cdr2_path_uses_encode_cdr2_le_at() -> TestResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// `Cdr2Decode::decode_cdr2_le_at` REQUIRED method (DDS-XTypes v1.3
+// §7.4.3.4.1 Tab.15) emission proof — symmetric to the encode-side
+// lock tests above. Added in 1.6.2a-codegen-rust.
+// ---------------------------------------------------------------------------
+//
+// The trait delegator must emit `decode_cdr2_le_at` on every generated
+// `impl Cdr2Decode for T` block; the runtime trait makes the method
+// REQUIRED (no default impl) so any missing emission produces an E0046
+// error in downstream crates compiling the generated code.
+
+#[test]
+fn struct_delegator_emits_decode_cdr2_le_at() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "fn decode_cdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
+        ),
+        "Probe delegator must emit decode_cdr2_le_at signature.\nGot:\n{out}"
+    );
+    let body = slice_between(
+        &out,
+        "fn decode_cdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("decode_cdr2_le_at body not found in Probe delegator");
+    assert!(
+        body.contains("Self::decode_xcdr2_le(&src[*offset..])"),
+        "decode_cdr2_le_at must delegate to decode_xcdr2_le on Probe (no @data_representation). \
+         Got body:\n{body}"
+    );
+    assert!(
+        body.contains("*offset += used;"),
+        "decode_cdr2_le_at must advance the global offset cursor. Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn xcdr1_struct_delegator_routes_decode_cdr2_le_at_to_xcdr1() -> TestResult<()> {
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("ProbeV1");
+    s.add_annotation(Annotation::DataRepresentation("XCDR1".into()));
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    s.add_field(Field::new("b", IdlType::Primitive(PrimitiveType::Double)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    let body = slice_between(
+        &out,
+        "fn decode_cdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("decode_cdr2_le_at body not found in ProbeV1 delegator");
+    assert!(
+        body.contains("Self::decode_xcdr1_le(&src[*offset..])"),
+        "ProbeV1 with @data_representation(XCDR1) must delegate decode_cdr2_le_at \
+         -> decode_xcdr1_le. Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn struct_inherent_emits_decode_xcdr1_le_at_wrapper() -> TestResult<()> {
+    // Symmetric with the xcdr2 inherent test below: an @data_representation(XCDR1)
+    // struct must emit the inherent `pub fn decode_xcdr1_le_at` wrapper next
+    // to the legacy `decode_xcdr1_le`, so an outer XCDR1 decoder can call
+    // `Inner::decode_xcdr1_le_at(src, &mut offset)` directly.
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("ProbeV1");
+    s.add_annotation(Annotation::DataRepresentation("XCDR1".into()));
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "pub fn decode_xcdr1_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
+        ),
+        "ProbeV1 inherent impl must emit decode_xcdr1_le_at wrapper.\nGot:\n{out}"
+    );
+    let body = slice_between(
+        &out,
+        "pub fn decode_xcdr1_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("decode_xcdr1_le_at wrapper body not found");
+    assert!(
+        body.contains("Self::decode_xcdr1_le(&src[*offset..])"),
+        "decode_xcdr1_le_at wrapper must delegate to decode_xcdr1_le on a sub-slice. \
+         Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn struct_inherent_emits_decode_xcdr2_le_at_wrapper() -> TestResult<()> {
+    // The inherent `impl Probe { ... }` block must include a
+    // `decode_{suffix}_le_at` wrapper next to the legacy `decode_{suffix}_le`
+    // so outer decoders can use the offset-aware call pattern
+    // `Inner::decode_xcdr2_le_at(src, &mut offset)` directly.
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    assert!(
+        out.contains(
+            "pub fn decode_xcdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
+        ),
+        "Probe inherent impl must emit decode_xcdr2_le_at wrapper.\nGot:\n{out}"
+    );
+    let body = slice_between(
+        &out,
+        "pub fn decode_xcdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("decode_xcdr2_le_at wrapper body not found");
+    assert!(
+        body.contains("Self::decode_xcdr2_le(&src[*offset..])"),
+        "decode_xcdr2_le_at wrapper must delegate to decode_xcdr2_le on a sub-slice. \
+         Got body:\n{body}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 //
 // `emit_dds_trait_impl` emits `fn encode(&self, buf, version)` and
 // `fn decode(buf, version)` on `impl ::hdds::api::DDS for T` that dispatch

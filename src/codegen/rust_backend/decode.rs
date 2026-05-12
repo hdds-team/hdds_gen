@@ -105,9 +105,38 @@ impl RustGenerator {
         }
         code.push_str("        }, offset))\n");
         code.push_str("    }\n");
+        code.push_str(&Self::emit_decode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
+    }
+
+    /// Emit a trivial `decode_{suffix}_le_at` wrapper that forwards to the
+    /// inherent `decode_{suffix}_le` on a sub-slice of the parent buffer.
+    /// The wrapper exists so that outer decoders can use the offset-aware
+    /// pattern `let value = Inner::decode_{suffix}_le_at(buf, &mut offset)?;`
+    /// instead of the legacy
+    /// `let (value, used) = Inner::decode_{suffix}_le(&buf[offset..])?;
+    /// offset += used;` sub-buffer pattern at call sites — uniform API
+    /// across all generated types. Symmetric with
+    /// `emit_encode_at_wrapper` from `encode.rs`.
+    ///
+    /// This wrapper is functionally identical to the legacy pattern at the
+    /// wire level. The deeper F01 (cdr2_alignment systemic) fix that lifts
+    /// the inherent body onto a global cursor is intentionally out of
+    /// scope for the present sub-commit (`1.6.2a-codegen-rust`); see the
+    /// docstring on `emit_cdr_trait_delegator` for rationale.
+    pub(super) fn emit_decode_at_wrapper(suffix: &str, indent: &str) -> String {
+        format!(
+            "{indent}    pub fn decode_{suffix}_le_at(\n\
+             {indent}        src: &[u8],\n\
+             {indent}        offset: &mut usize,\n\
+             {indent}    ) -> Result<Self, CdrError> {{\n\
+             {indent}        let (value, used) = Self::decode_{suffix}_le(&src[*offset..])?;\n\
+             {indent}        *offset += used;\n\
+             {indent}        Ok(value)\n\
+             {indent}    }}\n"
+        )
     }
 
     /// Emit field decoding logic
@@ -323,6 +352,7 @@ impl RustGenerator {
         }
         code.push_str("        }, offset))\n");
         code.push_str("    }\n");
+        code.push_str(&Self::emit_decode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
@@ -600,6 +630,7 @@ impl RustGenerator {
         }
         code.push_str("        }, offset))\n");
         code.push_str("    }\n");
+        code.push_str(&Self::emit_decode_at_wrapper(suffix, ""));
         code.push_str("}\n\n");
 
         code
