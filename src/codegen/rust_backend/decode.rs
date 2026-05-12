@@ -249,17 +249,17 @@ impl RustGenerator {
                 code.push_str("            Some(__hdds_s.to_string())\n");
             }
             _ => {
-                // Named, Sequence, Array, Map - delegate to the versioned
-                // inherent decoder emitted on the sub-type by this codegen.
+                // Named, Sequence, Array, Map — delegate to the offset-aware
+                // `_at` API on the sub-type so the cursor propagates
+                // uniformly through nested types.
                 let ty = Self::type_to_rust(&field.field_type);
                 let suffix = super::helpers::xcdr_method_suffix(version);
                 push_fmt(
                     &mut code,
                     format_args!(
-                        "            let (__hdds_val, __hdds_used) = <{ty}>::decode_{suffix}_le(&src[offset..])?;\n"
+                        "            let __hdds_val = <{ty}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                     ),
                 );
-                code.push_str("            offset += __hdds_used;\n");
                 code.push_str("            Some(__hdds_val)\n");
             }
         }
@@ -528,50 +528,68 @@ impl RustGenerator {
                             code.push_str("                        hdr_buf.copy_from_slice(&src[offset..offset+4]);\n");
                             code.push_str("                        let elem_len = u32::from_le_bytes(hdr_buf) as usize;\n");
                             code.push_str("                        offset += 4;\n");
+                            // Offset-aware decode via `_at`: capture pre/post
+                            // delta to compute `used` and clamp to `elem_len`
+                            // boundary (preserves PL_CDR2 EMHEADER bounds
+                            // semantics; mirror of encode's `elem_len = offset
+                            // - (elem_start + 4)` pattern from 1.6.1a-codegen-
+                            // encode).
+                            code.push_str("                        let __hdds_pre = offset;\n");
                             push_fmt(
                                 &mut code,
                                 format_args!(
-                                    "                        let (elem, used) = <{elem_ty}>::decode_{suffix}_le(&src[offset..])?;\n"
+                                    "                        let elem = <{elem_ty}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                                 ),
                             );
+                            code.push_str(
+                                "                        let used = offset - __hdds_pre;\n",
+                            );
                             code.push_str("                        let advance = usize::min(elem_len, used);\n");
-                            code.push_str("                        offset += advance;\n");
+                            code.push_str(
+                                "                        offset = __hdds_pre + advance;\n",
+                            );
                             code.push_str("                        items.push(elem);\n");
                             code.push_str("                    }\n");
                             code.push_str("                    let value_decoded = items;\n");
                         } else {
                             let ty = Self::type_to_rust(&field.field_type);
+                            code.push_str("                    let __hdds_pre = offset;\n");
                             push_fmt(
                                 &mut code,
                                 format_args!(
-                                    "                    let (value_decoded, used) = <{ty}>::decode_{suffix}_le(&src[offset..])?;\n",
+                                    "                    let value_decoded = <{ty}>::decode_{suffix}_le_at(src, &mut offset)?;\n",
                                 ),
                             );
-                            code.push_str("                    let advance = usize::min(member_end - offset, used);\n");
-                            code.push_str("                    offset += advance;\n");
+                            code.push_str("                    let used = offset - __hdds_pre;\n");
+                            code.push_str("                    let advance = usize::min(member_end - __hdds_pre, used);\n");
+                            code.push_str("                    offset = __hdds_pre + advance;\n");
                         }
                     } else {
                         let ty = Self::type_to_rust(&field.field_type);
+                        code.push_str("                    let __hdds_pre = offset;\n");
                         push_fmt(
                             &mut code,
                             format_args!(
-                                "                    let (value_decoded, used) = <{ty}>::decode_{suffix}_le(&src[offset..])?;\n",
+                                "                    let value_decoded = <{ty}>::decode_{suffix}_le_at(src, &mut offset)?;\n",
                             ),
                         );
-                        code.push_str("                    let advance = usize::min(member_end - offset, used);\n");
-                        code.push_str("                    offset += advance;\n");
+                        code.push_str("                    let used = offset - __hdds_pre;\n");
+                        code.push_str("                    let advance = usize::min(member_end - __hdds_pre, used);\n");
+                        code.push_str("                    offset = __hdds_pre + advance;\n");
                     }
                 }
                 _ => {
                     let ty = Self::type_to_rust(&field.field_type);
+                    code.push_str("                    let __hdds_pre = offset;\n");
                     push_fmt(
                         &mut code,
                         format_args!(
-                            "                    let (value_decoded, used) = <{ty}>::decode_{suffix}_le(&src[offset..])?;\n",
+                            "                    let value_decoded = <{ty}>::decode_{suffix}_le_at(src, &mut offset)?;\n",
                         ),
                     );
-                    code.push_str("                    let advance = usize::min(member_end - offset, used);\n");
-                    code.push_str("                    offset += advance;\n");
+                    code.push_str("                    let used = offset - __hdds_pre;\n");
+                    code.push_str("                    let advance = usize::min(member_end - __hdds_pre, used);\n");
+                    code.push_str("                    offset = __hdds_pre + advance;\n");
                 }
             }
             push_fmt(
@@ -822,10 +840,10 @@ impl RustGenerator {
         push_fmt(
             dst,
             format_args!(
-                "        let ({field_name}, __used) = <{type_name}>::decode_{suffix}_le(&src[offset..])?;\n"
+                "        let {field_name} = <{type_name}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
             ),
         );
-        dst.push_str("        offset += __used;\n\n");
+        dst.push('\n');
     }
 
     pub(super) fn decode_buffer_check(dst: &mut String, indent: &str, size_expr: &str) {

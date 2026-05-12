@@ -99,36 +99,39 @@ impl RustGenerator {
                     dst.push_str("            let elem_len = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize;\n");
                     dst.push_str("            offset += 4;\n");
                     let rust_type = Self::type_to_rust(inner);
+                    // PL_CDR2 mutable element: clamp `used` to `elem_len`
+                    // boundary per EMHEADER semantics. Offset-aware decode via
+                    // `_at` + pre/post delta to compute `used`.
+                    dst.push_str("            let __hdds_pre = offset;\n");
                     push_fmt(
                         dst,
                         format_args!(
-                            "            let (elem, used) = <{rust_type}>::decode_{suffix}_le(&src[offset..])?;\n"
+                            "            let elem = <{rust_type}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                         ),
                     );
+                    dst.push_str("            let used = offset - __hdds_pre;\n");
                     dst.push_str("            let advance = usize::min(elem_len, used);\n");
-                    dst.push_str("            offset += advance;\n");
+                    dst.push_str("            offset = __hdds_pre + advance;\n");
                     push_fmt(dst, format_args!("            {field_name}.push(elem);\n"));
                 } else {
                     let rust_type = Self::type_to_rust(inner);
                     push_fmt(
                         dst,
                         format_args!(
-                            "            let (elem, used) = <{rust_type}>::decode_{suffix}_le(&src[offset..])?;\n"
+                            "            let elem = <{rust_type}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                         ),
                     );
-                    dst.push_str("            offset += used;\n");
                     push_fmt(dst, format_args!("            {field_name}.push(elem);\n"));
                 }
             } else {
-                // Non-named types (sequences, arrays, maps) - decode inline
+                // Non-named types (sequences, arrays, maps) - decode inline via `_at`.
                 let rust_type = Self::type_to_rust(inner);
                 push_fmt(
                     dst,
                     format_args!(
-                        "            let (elem, used) = <{rust_type}>::decode_{suffix}_le(&src[offset..])?;\n"
+                        "            let elem = <{rust_type}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                     ),
                 );
-                dst.push_str("            offset += used;\n");
                 push_fmt(dst, format_args!("            {field_name}.push(elem);\n"));
             }
         }
@@ -236,10 +239,9 @@ impl RustGenerator {
             push_fmt(
                 dst,
                 format_args!(
-                    "            let (elem, used) = <{rust_type}>::decode_{suffix}_le(&src[offset..])?;\n"
+                    "            let elem = <{rust_type}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                 ),
             );
-            dst.push_str("            offset += used;\n");
             push_fmt(dst, format_args!("            {field_name}.push(elem);\n"));
         }
         dst.push_str("        }\n");
@@ -429,10 +431,9 @@ impl RustGenerator {
                 push_fmt(
                     dst,
                     format_args!(
-                        "{indent}let ({var_name}, used) = <{type_name}>::decode_{suffix}_le(&src[offset..])?;\n"
+                        "{indent}let {var_name} = <{type_name}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                     ),
                 );
-                push_fmt(dst, format_args!("{indent}offset += used;\n"));
             }
         }
     }
@@ -487,10 +488,9 @@ impl RustGenerator {
             push_fmt(
                 dst,
                 format_args!(
-                    "{indent}let ({var_name}, used) = <{type_name}>::decode_{suffix}_le(&src[offset..])?;\n"
+                    "{indent}let {var_name} = <{type_name}>::decode_{suffix}_le_at(src, &mut offset)?;\n"
                 ),
             );
-            push_fmt(dst, format_args!("{indent}offset += used;\n"));
         }
     }
 

@@ -678,16 +678,14 @@ impl RustGenerator {
             }
             IdlType::Named(name) => {
                 // Same 2.2-c critical fix as `emit_union_value_encode`: route
-                // the sub-type decoder on the outer's XCDR version.
+                // the sub-type decoder on the outer's XCDR version. Uses the
+                // offset-aware `_at` API so the cursor propagates uniformly
+                // through nested types.
                 push_fmt(
                     &mut code,
                     format_args!(
-                        "{indent}                let (val, n) = {name}::decode_{suffix}_le(&src[offset..])?;\n"
+                        "{indent}                let val = {name}::decode_{suffix}_le_at(src, &mut offset)?;\n"
                     ),
-                );
-                push_fmt(
-                    &mut code,
-                    format_args!("{indent}                offset += n;\n"),
                 );
             }
             IdlType::Sequence { inner, .. } => {
