@@ -245,20 +245,19 @@ fn generate_final_codec(
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}\n");
 
-    // decode_cdr2_le method
+    // decode_cdr2_le_at method (offset-propagating, F01-spec-correct)
     let _ = writeln!(
         out,
-        "{indent}/// Decode this struct from CDR2 little-endian format"
+        "{indent}/// Decode this struct from CDR2 little-endian format, propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes read, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
     for field in &s.fields {
         out.push_str(&decode::emit_decode_field_compat(
             field,
@@ -267,6 +266,24 @@ fn generate_final_codec(
             fastdds_compat,
         ));
     }
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.2e API; preserved for back-compat with PubSubType)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}");
 
@@ -348,20 +365,19 @@ fn generate_appendable_codec(
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}\n");
 
-    // decode_cdr2_le method with DHEADER
+    // decode_cdr2_le_at method with DHEADER (offset-propagating)
     let _ = writeln!(
         out,
-        "{indent}/// Decode this struct from CDR2 little-endian format (APPENDABLE with DHEADER)"
+        "{indent}/// Decode this struct from CDR2 little-endian format (APPENDABLE with DHEADER), propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes read, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
     // Read DHEADER
     let _ = writeln!(
         out,
@@ -397,6 +413,24 @@ fn generate_appendable_codec(
         out,
         "{indent}    offset = payload_end; // Skip any unknown trailing fields"
     );
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.2e API)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}");
 
@@ -613,17 +647,16 @@ fn generate_mutable_decode(
 
     let _ = writeln!(
         out,
-        "{indent}/// Decode this struct from CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER)"
+        "{indent}/// Decode this struct from CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER), propagating offset."
     );
     let _ = writeln!(
         out,
-        "{indent}/// Returns the number of bytes read, or -1 on error"
+        "{indent}/// Returns 0 on success, negative error code on failure."
     );
     let _ = writeln!(
         out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
     );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
 
     // Read DHEADER
     let _ = writeln!(
@@ -787,6 +820,24 @@ fn generate_mutable_decode(
     let _ = writeln!(out, "{indent}    }}");
 
     let _ = writeln!(out);
+    let _ = writeln!(out, "{indent}    return 0;");
+    let _ = writeln!(out, "{indent}}}\n");
+
+    // Legacy wrapper (pre-1.6.2e API)
+    let _ = writeln!(
+        out,
+        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
+    );
+    let _ = writeln!(
+        out,
+        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
+    );
+    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
+    let _ = writeln!(
+        out,
+        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
+    );
+    let _ = writeln!(out, "{indent}    if (err) return err;");
     let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
     let _ = writeln!(out, "{indent}}}");
 

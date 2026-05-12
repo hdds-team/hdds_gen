@@ -191,14 +191,39 @@ fn write_union_codec(
     );
     push_fmt(out, format_args!("{member_indent}}}\n\n"));
 
-    // decode_cdr2_le method
+    // decode_cdr2_le_at method (offset-propagating, F01-spec-correct)
     push_fmt(
         out,
-        format_args!("{member_indent}/// Decode this union from CDR2 little-endian format\n"),
+        format_args!(
+            "{member_indent}/// Decode this union from CDR2 little-endian format, propagating offset.\n"
+        ),
     );
     push_fmt(
         out,
-        format_args!("{member_indent}/// Returns the number of bytes read, or -1 on error\n"),
+        format_args!("{member_indent}/// Returns 0 on success, negative error code on failure.\n"),
+    );
+    push_fmt(
+        out,
+        format_args!(
+            "{member_indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{\n"
+        ),
+    );
+
+    // Decode discriminator
+    out.push_str(&emit_decode_discriminator(&u.discriminator, &body_indent));
+
+    // Switch on discriminator to decode the appropriate field
+    out.push_str(&emit_decode_switch(u, idx, &body_indent, nontrivial));
+
+    push_fmt(out, format_args!("{body_indent}return 0;\n"));
+    push_fmt(out, format_args!("{member_indent}}}\n\n"));
+
+    // Legacy wrapper (pre-1.6.2e API)
+    push_fmt(
+        out,
+        format_args!(
+            "{member_indent}/// Legacy: returns the number of bytes read, or negative on error.\n"
+        ),
     );
     push_fmt(
         out,
@@ -207,13 +232,11 @@ fn write_union_codec(
         ),
     );
     push_fmt(out, format_args!("{body_indent}std::size_t offset = 0;\n"));
-
-    // Decode discriminator
-    out.push_str(&emit_decode_discriminator(&u.discriminator, &body_indent));
-
-    // Switch on discriminator to decode the appropriate field
-    out.push_str(&emit_decode_switch(u, idx, &body_indent, nontrivial));
-
+    push_fmt(
+        out,
+        format_args!("{body_indent}int err = decode_cdr2_le_at(src, len, offset);\n"),
+    );
+    push_fmt(out, format_args!("{body_indent}if (err) return err;\n"));
     push_fmt(
         out,
         format_args!("{body_indent}return static_cast<int>(offset);\n"),
@@ -514,22 +537,23 @@ fn emit_decode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident(nm);
             if idx.structs.contains_key(type_ident) || idx.unions.contains_key(type_ident) {
-                // TRANSITIONAL: encode migrated to `_at` in 1.6.1e; decode
-                // deferred to 1.6.11. Symmetric F01-class on the read path.
+                // F01-spec-correct: propagate global offset via `_at` API
+                // instead of slicing the source buffer (which loses the outer
+                // alignment context inside the callee). Mirrors the encode
+                // side migration that landed in hddsgen 1.6.1e.
                 format!(
                     "{indent}{{\n\
-                     {indent}    // TODO(hddsgen 1.6.11): migrate to decode_cdr2_le_at to match encode side.\n\
-                     {indent}    int bytes = {value_expr}.decode_cdr2_le(src + offset, len - offset);\n\
-                     {indent}    if (bytes < 0) return -1;\n\
-                     {indent}    offset += static_cast<std::size_t>(bytes);\n\
+                     {indent}    int err = {value_expr}.decode_cdr2_le_at(src, len, offset);\n\
+                     {indent}    if (err) return err;\n\
                      {indent}}}\n"
                 )
             } else if idx.bitsets.contains_key(type_ident) || idx.bitmasks.contains_key(type_ident)
             {
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
                 let mut out = String::new();
                 let _ = write!(
                     out,
-                    "{indent}offset = cdr2::align_offset(offset, 8);\n\
+                    "{indent}offset = cdr2::align_offset(offset, 4);\n\
                      {indent}if (!cdr2::can_read(len, offset, 8)) return -1;\n\
                      {indent}{{\n\
                      {indent}    std::uint64_t tmp;\n\

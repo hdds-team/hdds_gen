@@ -265,15 +265,12 @@ fn emit_decode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) {
-                // TRANSITIONAL: encode side migrated to `_at` in hddsgen 1.6.1e;
-                // decode is deferred to sub-chantier 1.6.11. Until then this
-                // caller still uses the sub-buffer slice form, which is the
-                // F01-class bug on the read path — symmetric to the original
-                // encode bug. Safe in practice only when the inner struct's
-                // first member has alignment <= 4 (which the cap-4 rule
-                // guarantees for primitives but not for nested sequences).
+                // F01-spec-correct: propagate global offset via `_at` API
+                // instead of slicing the source buffer (which loses the outer
+                // alignment context inside the callee). Mirrors the encode
+                // side migration that landed in hddsgen 1.6.1e.
                 format!(
-                    "{indent}/* TODO(hddsgen 1.6.11): migrate to {fname}_decode_cdr2_le_at to match encode side. */\n{indent}{{ int e = {fname}_decode_cdr2_le({ptr}, src + offset, len - offset); if (e < 0) return e; err = cdr_add(&offset, (size_t)e); if (err) return err; }}\n",
+                    "{indent}{{ int e = {fname}_decode_cdr2_le_at({ptr}, src, len, &offset); if (e) return e; }}\n",
                     indent = indent,
                     fname = c_name(&type_ident),
                     ptr = ptr_expr
@@ -281,7 +278,8 @@ fn emit_decode_type(
             } else if idx.bitsets.contains_key(&type_ident)
                 || idx.bitmasks.contains_key(&type_ident)
             {
-                decode_scalar(indent, 8, 8, ptr_expr)
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
+                decode_scalar(indent, 4, 8, ptr_expr)
             } else if idx.enums.contains_key(&type_ident) {
                 decode_scalar(indent, 4, 4, ptr_expr)
             } else if let Some(td) = idx.typedefs.get(&type_ident) {

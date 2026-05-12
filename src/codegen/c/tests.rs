@@ -37,6 +37,7 @@ fn c_generates_struct_and_enum() -> TestResult<()> {
     assert!(code.contains("int32_t y;"));
     assert!(code.contains("static inline int point_encode_cdr2_le_at("));
     assert!(code.contains("static inline int point_encode_cdr2_le("));
+    assert!(code.contains("static inline int point_decode_cdr2_le_at("));
     assert!(code.contains("static inline int point_decode_cdr2_le("));
     assert!(code.contains("static inline size_t point_max_cdr2_size("));
     Ok(())

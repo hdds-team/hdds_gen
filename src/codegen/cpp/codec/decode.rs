@@ -122,25 +122,25 @@ fn emit_decode_type(
         IdlType::Named(nm) => {
             let type_ident = last_ident_owned(nm);
             if idx.structs.contains_key(&type_ident) || idx.unions.contains_key(&type_ident) {
-                // TRANSITIONAL: encode side migrated to `_at` in hddsgen 1.6.1e;
-                // decode is deferred to sub-chantier 1.6.11. Symmetric F01-class
-                // bug on the read path until then. See decode.rs TODO comment.
+                // F01-spec-correct: propagate global offset via `_at` API
+                // instead of slicing the source buffer (which loses the outer
+                // alignment context inside the callee). Mirrors the encode
+                // side migration that landed in hddsgen 1.6.1e.
                 format!(
                     "{indent}{{\n\
-                     {indent}    // TODO(hddsgen 1.6.11): migrate to decode_cdr2_le_at to match encode side.\n\
-                     {indent}    int bytes = {value}.decode_cdr2_le(src + offset, len - offset);\n\
-                     {indent}    if (bytes < 0) return -1;\n\
-                     {indent}    offset += static_cast<std::size_t>(bytes);\n\
+                     {indent}    int err = {value}.decode_cdr2_le_at(src, len, offset);\n\
+                     {indent}    if (err) return err;\n\
                      {indent}}}\n",
                     indent = indent,
                     value = value_expr
                 )
             } else if idx.bitsets.contains_key(&type_ident) {
-                // Bitsets are structs with bitfields - use from_uint64() method
+                // Bitsets are structs with bitfields - use from_uint64() method.
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
                 let mut out = String::new();
                 let _ = write!(
                     out,
-                    "{indent}offset = cdr2::align_offset(offset, 8);\n\
+                    "{indent}offset = cdr2::align_offset(offset, 4);\n\
                      {indent}if (!cdr2::can_read(len, offset, 8)) return -1;\n\
                      {indent}{{\n\
                      {indent}    std::uint64_t tmp;\n\
@@ -153,11 +153,12 @@ fn emit_decode_type(
                 );
                 out
             } else if idx.bitmasks.contains_key(&type_ident) {
-                // Bitmasks are enum class : uint64_t - use static_cast
+                // Bitmasks are enum class : uint64_t - use static_cast.
+                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4).
                 let mut out = String::new();
                 let _ = write!(
                     out,
-                    "{indent}offset = cdr2::align_offset(offset, 8);\n\
+                    "{indent}offset = cdr2::align_offset(offset, 4);\n\
                      {indent}if (!cdr2::can_read(len, offset, 8)) return -1;\n\
                      {indent}{{\n\
                      {indent}    std::uint64_t tmp;\n\
