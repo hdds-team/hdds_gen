@@ -98,7 +98,7 @@ const fn get_lc_for_size(size: Option<usize>) -> u32 {
         Some(2) => 1,
         Some(4) => 2,
         Some(8) => 3,
-        _ => 5, // NEXTINT
+        _ => 4, // LC=4 (NEXTINT, per OMG XTypes v1.3 §7.4.3.4.3 Table 39)
     }
 }
 
@@ -648,8 +648,8 @@ impl PythonGenerator {
             );
             push_fmt(&mut out, format_args!("{}offset += 4\n", indent2));
 
-            if lc == 5 {
-                // NEXTINT: need to encode size after EMHEADER
+            if lc == 4 {
+                // LC=4 (NEXTINT): encode 4-byte member length after EMHEADER
                 push_fmt(
                     &mut out,
                     format_args!("{}# NEXTINT: encode field size\n", indent2),
@@ -1342,7 +1342,7 @@ impl PythonGenerator {
         push_fmt(&mut out, format_args!("{}    _member_size = 8\n", indent3));
         push_fmt(
             &mut out,
-            format_args!("{}elif _lc == 5:  # NEXTINT\n", indent3),
+            format_args!("{}elif _lc == 4:  # NEXTINT\n", indent3),
         );
         push_fmt(
             &mut out,
@@ -3211,8 +3211,8 @@ mod tests {
         );
         assert!(code.contains("if _lc == 0:"), "Should handle LC=0");
         assert!(
-            code.contains("elif _lc == 5:  # NEXTINT"),
-            "Should handle LC=5 NEXTINT"
+            code.contains("elif _lc == 4:  # NEXTINT"),
+            "Should handle LC=4 NEXTINT"
         );
         assert!(
             code.contains("_member_size, = struct.unpack_from('<I', data, offset)"),

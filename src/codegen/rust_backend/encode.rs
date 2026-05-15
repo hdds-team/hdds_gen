@@ -307,7 +307,8 @@ impl RustGenerator {
                 2 => 1,
                 4 => 2,
                 8 => 3,
-                _ => 5, // fallback (NEXTINT) - not expected for compact structs
+                _ => 5, // LC=5 (nested DHEADER) fallback — unreachable for compact structs,
+                        // which by construction contain only fixed-size primitives.
             };
 
             code.push_str(
@@ -414,10 +415,10 @@ impl RustGenerator {
                         2 => (1u32, false),
                         4 => (2u32, false),
                         8 => (3u32, false),
-                        _ => (5u32, true),
+                        _ => (4u32, true),
                     }
                 }
-                _ => (5u32, true),
+                _ => (4u32, true),
             };
 
             if use_nextint {
@@ -454,9 +455,9 @@ impl RustGenerator {
             match &field.field_type {
                 IdlType::Primitive(p) => {
                     // Compact primitives: no extra struct-level alignment here.
-                    // For LC=5 primitives, use inline encoder (with NEXTINT).
-                    // For LC<4 primitives, use compact encoder (no NEXTINT, no extra alignment).
-                    if matches!(lc, 5u32) {
+                    // For LC=4 primitives (NEXTINT), use inline encoder (with NEXTINT).
+                    // For LC=0..3 primitives, use compact encoder (no NEXTINT, no extra alignment).
+                    if matches!(lc, 4u32) {
                         code.push_str(&Self::encode_primitive_inline(
                             p,
                             &ident,
@@ -580,7 +581,7 @@ impl RustGenerator {
                 }
             }
 
-            // Fill NEXTINT (member length) for LC=5 only
+            // Fill NEXTINT (member length) for LC=4 only
             if use_nextint {
                 code.push_str("        let member_len = offset - member_start;\n");
                 code.push_str(

@@ -406,9 +406,14 @@ impl RustGenerator {
     /// XCDR v2 encoders. The target of the delegation is the type's
     /// `@data_representation` annotation (`@XCDR1` -> Xcdr1, otherwise Xcdr2).
     ///
-    /// `encode_cdr2_le_at` and `decode_cdr2_le_at` are REQUIRED trait methods
-    /// per DDS-XTypes v1.3 §7.4.3.4.1 Tab.15 (offset-propagating entry
-    /// points). Both bodies are trivial wrappers that call the legacy
+    /// `encode_cdr2_le_at` and `decode_cdr2_le_at` are REQUIRED methods on
+    /// the HDDS `Cdr2Encode` / `Cdr2Decode` traits (chantier 1.6.1-1.6.2
+    /// migration). They are the offset-propagating entry points that the
+    /// HDDS runtime uses to keep alignment consistent through nested types;
+    /// the spec itself (DDS-XTypes v1.3 §7.4.3.4) describes the wire-level
+    /// alignment rules but does not prescribe the API surface — the `_at`
+    /// suffix and its REQUIRED status are an HDDS convention, not a spec
+    /// mandate. Both bodies are trivial wrappers that call the legacy
     /// `_le` method on a sub-slice and advance the global cursor by the
     /// returned length. This routes to the inherent `(en|de)code_xcdrN_le`,
     /// which is the actual codec body. The inherent `(en|de)code_xcdrN_le_at`

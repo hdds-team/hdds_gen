@@ -114,14 +114,17 @@ const fn cdr2_fixed_size(ty: &IdlType) -> Option<usize> {
 }
 
 /// Compute LC (Length Code) for EMHEADER based on field size.
-/// LC values: 0=1byte, 1=2bytes, 2=4bytes, 3=8bytes, 5=NEXTINT follows
+/// LC values per OMG DDS-XTypes v1.3 §7.4.3.4.3 Table 39:
+///   0/1/2/3 = embedded size 1/2/4/8 bytes; 4 = NEXTINT (4-byte u32 length
+///   follows the EMHEADER1); 5 = length from nested type's DHEADER (no
+///   NEXTINT); 6/7 = reserved.
 const fn compute_lc(ty: &IdlType) -> u32 {
     match cdr2_fixed_size(ty) {
         Some(1) => 0,
         Some(2) => 1,
         Some(4) => 2,
         Some(8) => 3,
-        _ => 5, // Variable size: use NEXTINT
+        _ => 4, // LC=4 (NEXTINT, per OMG XTypes v1.3 §7.4.3.4.3 Table 39)
     }
 }
 
@@ -473,7 +476,7 @@ fn generate_mutable_codec(
     for (field_idx, field) in s.fields.iter().enumerate() {
         let member_id = compute_member_id(s, field_idx, field);
         let lc = compute_lc(&field.field_type);
-        let use_nextint = lc == 5;
+        let use_nextint = lc == 4;
         let is_optional = field.is_optional();
 
         let _ = writeln!(out);
@@ -724,7 +727,7 @@ fn generate_mutable_decode(
         out,
         "{indent}            case 3: member_len = 8; break; // 8 bytes"
     );
-    let _ = writeln!(out, "{indent}            case 5: {{ // NEXTINT follows");
+    let _ = writeln!(out, "{indent}            case 4: {{ // NEXTINT follows");
     let _ = writeln!(
         out,
         "{indent}                if (!cdr2::can_read(len, offset, 4)) return -1;"

@@ -412,7 +412,7 @@ impl RustGenerator {
         code.push_str("            let lc = (em >> 28) & 0x7;\n");
         code.push_str("            let must_understand = (em >> 31) & 1 == 1;\n");
         code.push_str("            let member_id = em & 0x0fff_ffff;\n");
-        code.push_str("            let member_len = match lc { 0 => 1, 1 => 2, 2 => 4, 3 => 8, 5 => { let len = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize; offset += 4; len }, _ => end - offset };\n");
+        code.push_str("            let member_len = match lc { 0 => 1, 1 => 2, 2 => 4, 3 => 8, 4 => { let len = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize; offset += 4; len }, _ => end - offset };\n");
         code.push_str("            let member_end = offset.saturating_add(member_len).min(end);\n");
         code.push_str("            match member_id {\n");
 
