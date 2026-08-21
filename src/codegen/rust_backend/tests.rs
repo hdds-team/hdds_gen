@@ -1196,3 +1196,126 @@ fn enum_emits_dual_inherent_methods_and_trait_delegator() -> TestResult<()> {
     );
     Ok(())
 }
+
+/// Parse + generate Rust in-crate, mirroring the `run_gen` CLI pipeline
+/// (parse -> generate, no separate validation pass). No enclosing `module`,
+/// so emitted indentation matches the generator's literal `push_str` source
+/// exactly (module-wrapping re-indents every line by 4 spaces).
+fn generate_rust_for_idl(idl: &str) -> String {
+    let mut parser = crate::Parser::try_new(idl).expect("lexer error");
+    let file = parser.parse().expect("parse error");
+    RustGenerator::new().generate(&file).expect("codegen error")
+}
+
+/// Ordered substring: EMHEADER align-and-zero-fill (XTypes 1.3 §7.4.3.4)
+/// immediately followed by the LC 0-3 (no-NEXTINT) EMHEADER bounds check.
+const EMH_ALIGN_THEN_BOUNDS_CHECK: &str = "        // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n        let pad = (4 - (offset % 4)) % 4;\n        if dst.len() < offset + pad { return Err(CdrError::BufferTooSmall); }\n        dst[offset..offset + pad].fill(0);\n        offset += pad;\n        if dst.len() < offset + 4 { return Err(CdrError::BufferTooSmall); }\n";
+
+#[test]
+fn emheader_write_is_4_aligned_compact_mutable_per_xtypes_7_4_3_4() {
+    // All-primitive @mutable struct routes through the compact encode path
+    // (emit_pl_cdr2_compact_encode_impl).
+    let src = generate_rust_for_idl("@mutable struct S { boolean b; unsigned long v; };");
+    let writes = src.matches("let emheader =").count();
+    let ordered_aligns = src.matches(EMH_ALIGN_THEN_BOUNDS_CHECK).count();
+    assert_eq!(writes, 2);
+    assert_eq!(
+        ordered_aligns, writes,
+        "each EMHEADER write needs the align-then-bounds-check sequence immediately before it"
+    );
+}
+
+#[test]
+fn emheader_write_is_4_aligned_general_mutable_per_xtypes_7_4_3_4() {
+    // An @optional field makes the struct non-compact, routing through the
+    // general encode path (emit_pl_cdr2_encode_impl).
+    let src = generate_rust_for_idl("@mutable struct S { boolean b; @optional unsigned long v; };");
+    let writes = src.matches("let emheader =").count();
+    let ordered_aligns = src.matches(EMH_ALIGN_THEN_BOUNDS_CHECK).count();
+    assert_eq!(writes, 2);
+    assert_eq!(
+        ordered_aligns, writes,
+        "each EMHEADER write needs the align-then-bounds-check sequence immediately before it"
+    );
+}
+
+#[test]
+fn decode_compact_mutable_realigns_before_each_emheader_per_xtypes_7_4_3_4() {
+    // is_compact_mutable_struct selects the compact decoder
+    // (emit_pl_cdr2_compact_decode_impl) for the same
+    // all-primitive struct as the compact encode test above — it must
+    // re-align identically or encode/decode desync (round-trip breaks).
+    let src = generate_rust_for_idl("@mutable struct S { boolean b; unsigned long v; };");
+    let ordered = "        // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n        offset += (4 - (offset % 4)) % 4;\n        if src.len() < offset + 4 { return Err(CdrError::UnexpectedEof); }\n";
+    assert_eq!(
+        src.matches(ordered).count(),
+        2,
+        "compact decode must align before every EMHEADER read, symmetric to compact encode"
+    );
+}
+
+#[test]
+fn decode_general_loop_realigns_and_bounds_checks_end_per_xtypes_7_4_3_4() {
+    // Non-compact struct routes through the general decode loop
+    // (emit_pl_cdr2_decode_impl); after aligning inside
+    // `while offset < end`, offset must be re-checked against `end` before
+    // the next EMHEADER read (alignment padding can land exactly on `end`).
+    let src = generate_rust_for_idl("@mutable struct S { unsigned long v; @optional float w; };");
+    let ordered = "            // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n            offset += (4 - (offset % 4)) % 4;\n            if offset >= end { offset = end; break; }\n";
+    assert!(
+        src.contains(ordered),
+        "general decode loop must re-check `offset < end` immediately after aligning"
+    );
+}
+
+#[test]
+fn decode_loop_handles_lc_5_6_7_per_xtypes_7_4_3_4_2() {
+    // Same non-compact struct so decode routes through the general decode
+    // loop (emit_pl_cdr2_decode_impl) that owns the LC match.
+    let src = generate_rust_for_idl("@mutable struct S { unsigned long v; @optional float w; };");
+    assert!(
+        src.contains("5 | 6 | 7 =>"),
+        "LC 5/6/7 must have a real arm, not the catch-all"
+    );
+}
+
+#[test]
+fn max_size_budgets_emheader_pad_per_xtypes_7_4_3_4() {
+    // max_size must budget the up-to-3-byte EMHEADER pad per member on top
+    // of the 4-byte header itself, or a correctly max-sized buffer can
+    // still BufferTooSmall on encode.
+    let compact = generate_rust_for_idl("@mutable struct S { boolean b; unsigned long v; };");
+    assert!(
+        compact.contains("3 + 4 + 1 + 3 + 4 + 4"),
+        "compact max_size must add +3 EMHEADER pad per member:\n{compact}"
+    );
+
+    let general =
+        generate_rust_for_idl("@mutable struct S { boolean b; @optional unsigned long v; };");
+    assert!(
+        general.contains("size += 3 + 4 + 0 + 1;"),
+        "general max_size must add +3 EMHEADER pad per member:\n{general}"
+    );
+    assert!(
+        general.contains("size += 3 + 4 + 3 + 4; }"),
+        "general max_size must add +3 EMHEADER pad for optional members too:\n{general}"
+    );
+}
+
+#[test]
+fn mutable_decode_break_path_clamps_offset_to_the_dheader_extent() {
+    // The DHEADER extent is authoritative: 4-byte EMHEADER padding must not
+    // leave `offset` past `end` on a malformed non-4-aligned extent, because
+    // the top-level decoder returns it as the consumed byte count.
+    // An @optional member keeps it off the compact path, so decode routes
+    // through the general PL_CDR2 loop that owns this break.
+    let src = generate_rust_for_idl("@mutable struct M { long a; @optional float b; };");
+    assert!(
+        src.contains("if offset >= end { offset = end; break; }"),
+        "the EMHEADER loop must clamp before breaking:\n{src}"
+    );
+    assert!(
+        !src.contains("if offset >= end { break; }"),
+        "no unclamped break may remain:\n{src}"
+    );
+}

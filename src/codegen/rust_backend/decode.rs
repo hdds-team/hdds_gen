@@ -313,6 +313,9 @@ impl RustGenerator {
             let ident = super::super::keywords::rust_ident(&field.name);
             let member_id = Self::compute_member_id(s, idx, field);
             code.push_str(
+                "        // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n        offset += (4 - (offset % 4)) % 4;\n",
+            );
+            code.push_str(
                 "        if src.len() < offset + 4 { return Err(CdrError::UnexpectedEof); }\n",
             );
             code.push_str(
@@ -403,6 +406,12 @@ impl RustGenerator {
 
         code.push_str("        while offset < end {\n");
         code.push_str(
+            // The DHEADER extent is authoritative: alignment padding must not
+            // carry `offset` past `end`, which is returned as the consumed
+            // byte count for a non-4-aligned (malformed) extent.
+            "            // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n            offset += (4 - (offset % 4)) % 4;\n            if offset >= end { offset = end; break; }\n",
+        );
+        code.push_str(
             "            if src.len() < offset + 8 { return Err(CdrError::UnexpectedEof); }\n",
         );
         code.push_str(
@@ -412,7 +421,7 @@ impl RustGenerator {
         code.push_str("            let lc = (em >> 28) & 0x7;\n");
         code.push_str("            let must_understand = (em >> 31) & 1 == 1;\n");
         code.push_str("            let member_id = em & 0x0fff_ffff;\n");
-        code.push_str("            let member_len = match lc { 0 => 1, 1 => 2, 2 => 4, 3 => 8, 4 => { let len = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize; offset += 4; len }, _ => end - offset };\n");
+        code.push_str("            let member_len = match lc { 0 => 1, 1 => 2, 2 => 4, 3 => 8,\n                4 => { let len = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize; offset += 4; len },\n                // XTypes 1.3 §7.4.3.4.2: LC 5/6/7 — NEXTINT is also the member's first 4 bytes.\n                5 | 6 | 7 => { let n = u32::from_le_bytes(src[offset..offset+4].try_into().unwrap()) as usize; 4 + n * match lc { 6 => 4, 7 => 8, _ => 1 } },\n                // lc = (em >> 28) & 0x7 is 0..=7, all covered above.\n                _ => unreachable!(),\n            };\n");
         code.push_str("            let member_end = offset.saturating_add(member_len).min(end);\n");
         code.push_str("            match member_id {\n");
 
