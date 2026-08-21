@@ -60,13 +60,13 @@ fn mutable_optional_poly3d_contains_member_ids_and_option() {
         "altitude should be optional"
     );
 
-    // MemberIds (autoid hash with FNV-1a 32-bit & 0x0FFF_FFFF)
+    // MemberIds (autoid hash: MD5(name)[0..4] LE & 0x0FFF_FFFF, XTypes 1.3 7.3.1.2.1.2)
     assert!(
-        code.contains("0x0C9567C6"),
+        code.contains("0x0E81AB0A"),
         "points MemberId should be present"
     );
     assert!(
-        code.contains("0x027D2AF7"),
+        code.contains("0x0093D814"),
         "altitude MemberId should be present"
     );
 

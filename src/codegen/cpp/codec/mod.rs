@@ -47,7 +47,7 @@ fn is_appendable(s: &Struct) -> bool {
 /// Priority:
 /// - `@id` annotation on the field
 /// - `@autoid(SEQUENTIAL)` on the struct -> use declaration order
-/// - default/`@autoid(HASH)` -> FNV-1a 32-bit & `0x0FFF_FFFF` (`XTypes` ss7.3.1.2.1.2)
+/// - default/`@autoid(HASH)` -> MD5-derived hash per `XTypes` ss7.3.1.2.1.2
 fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
     // Check for explicit @id annotation
     for ann in &field.annotations {
@@ -66,18 +66,7 @@ fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
         return idx as u32;
     }
 
-    // Default: FNV-1a 32-bit hash masked to 28 bits
-    fnv1a_member_id(&field.name)
-}
-
-/// FNV-1a 32-bit hash masked to 28 bits (`XTypes` ss7.3.1.2.1.2)
-fn fnv1a_member_id(name: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in name.as_bytes() {
-        h ^= u32::from(*b);
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h & 0x0fff_ffff
+    crate::codegen::hash_member_id(&field.name)
 }
 
 /// Get the fixed size of a type if it's a fixed-size primitive.
