@@ -31,10 +31,8 @@ impl RustGenerator {
         let name = &s.name;
         push_fmt(&mut output, format_args!("{indent}pub struct {name} {{\n"));
 
-        if let Some(base) = &s.base_struct {
-            push_fmt(&mut output, format_args!("{indent}    pub base: {base},\n"));
-        }
-
+        // Inherited members arrive already inlined in `s.fields` (see
+        // `inheritance::flatten`), so no `base` member is emitted.
         for field in &s.fields {
             let mut field_type = Self::type_to_rust(&field.field_type);
             if field.is_external() {

@@ -19,6 +19,7 @@ mod encode_containers;
 mod enums;
 mod fixed;
 pub(crate) mod helpers;
+mod inheritance;
 mod structs;
 mod typedefs;
 mod unions;
@@ -112,6 +113,12 @@ impl RustGenerator {
 impl CodeGenerator for RustGenerator {
     fn generate(&self, ast: &IdlFile) -> Result<String> {
         let mut output = String::new();
+
+        // XTypes 1.3 ss7.2.2.4.4: inline each derived struct's inherited
+        // members before anything reads the AST, so every emitter below (and
+        // the type index the TypeObject path queries) sees one member list.
+        let flattened = inheritance::flatten(ast)?;
+        let ast = &flattened;
 
         // Track mutable/appendable types for PL_CDR2 generation.
         let mutables = helpers::collect_mutable_types(ast);
