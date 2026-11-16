@@ -12,6 +12,13 @@ use crate::ast::{Field, Struct};
 use crate::types::{IdlType, PrimitiveType};
 
 impl RustGenerator {
+    /// XTypes 1.3 ss7.4.3.4: EMHEADER starts on a 4-byte boundary; pad bytes are zero-filled.
+    fn emit_emheader_align(code: &mut String) {
+        code.push_str(
+            "        // XTypes 1.3 §7.4.3.4: EMHEADER starts on a 4-byte boundary.\n        let pad = (4 - (offset % 4)) % 4;\n        if dst.len() < offset + pad { return Err(CdrError::BufferTooSmall); }\n        dst[offset..offset + pad].fill(0);\n        offset += pad;\n",
+        );
+    }
+
     /// Emit encode methods for a struct.
     ///
     /// All three dispatch branches now emit inherent `pub fn encode_xcdrN_le`
@@ -311,6 +318,7 @@ impl RustGenerator {
                         // which by construction contain only fixed-size primitives.
             };
 
+            Self::emit_emheader_align(&mut code);
             code.push_str(
                 "        if dst.len() < offset + 4 { return Err(CdrError::BufferTooSmall); }\n",
             );
@@ -342,7 +350,7 @@ impl RustGenerator {
         code.push_str("        Ok(offset)\n");
         code.push_str("    }\n\n");
 
-        // max size = sum of EMHEADER1 (4 bytes) + fixed payload per field
+        // max size = sum of EMHEADER pad (3) + EMHEADER1 (4 bytes) + fixed payload per field
         push_fmt(
             &mut code,
             format_args!("    pub fn max_{suffix}_size(&self) -> usize {{\n"),
@@ -356,7 +364,7 @@ impl RustGenerator {
             if !size_expr.is_empty() {
                 size_expr.push_str(" + ");
             }
-            push_fmt(&mut size_expr, format_args!("4 + {fixed}"));
+            push_fmt(&mut size_expr, format_args!("3 + 4 + {fixed}"));
         }
         if size_expr.is_empty() {
             size_expr.push('0');
@@ -421,6 +429,7 @@ impl RustGenerator {
                 _ => (4u32, true),
             };
 
+            Self::emit_emheader_align(&mut code);
             if use_nextint {
                 code.push_str(
                     "        if dst.len() < offset + 8 { return Err(CdrError::BufferTooSmall); }\n",
@@ -624,11 +633,12 @@ impl RustGenerator {
                 IdlType::Array { .. } | IdlType::Named(_) => 64,
                 IdlType::Map { .. } => 128,
             };
+            // +3: EMHEADER pad (XTypes 1.3 §7.4.3.4), on top of the payload's own alignment.
             if field.is_optional() {
                 push_fmt(
                     &mut code,
                     format_args!(
-                        "        if let Some(_value) = &self.{fname} {{ size += 4 + {pad} + {add}; }}\n",
+                        "        if let Some(_value) = &self.{fname} {{ size += 3 + 4 + {pad} + {add}; }}\n",
                         fname = ident,
                         pad = pad,
                         add = add
@@ -637,7 +647,11 @@ impl RustGenerator {
             } else {
                 push_fmt(
                     &mut code,
-                    format_args!("        size += 4 + {pad} + {add};\n", pad = pad, add = add),
+                    format_args!(
+                        "        size += 3 + 4 + {pad} + {add};\n",
+                        pad = pad,
+                        add = add
+                    ),
                 );
             }
         }
