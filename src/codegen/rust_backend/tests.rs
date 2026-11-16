@@ -84,7 +84,10 @@ fn codegen_struct_inheritance_rust() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
     assert!(out.contains("pub struct Derived {"));
-    assert!(out.contains("pub base: Base,"));
+    // XTypes 1.3 ss7.2.2.4.4: Derived's members are Base's followed by its own,
+    // flattened — no synthetic `base` field (which no emitter ever populated).
+    assert!(!out.contains("pub base: Base,"));
+    assert!(out.contains("pub struct Derived {\n    pub id: i32,\n    pub name: String,\n}"));
     assert!(out.contains("pub id: i32"));
     assert!(out.contains("pub name: String"));
     Ok(())
@@ -1195,4 +1198,400 @@ fn enum_emits_dual_inherent_methods_and_trait_delegator() -> TestResult<()> {
         "Color should emit Cdr2Decode trait delegator"
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// IDL inheritance flattening (XTypes 1.3 ss7.2.2.4.4)
+// ---------------------------------------------------------------------------
+
+/// Parse + generate Rust, surfacing the generator error instead of panicking.
+fn try_generate_rust_for_idl(idl: &str) -> crate::error::Result<String> {
+    let mut parser = crate::Parser::try_new(idl).expect("lexer error");
+    let file = parser.parse().expect("parse error");
+    RustGenerator::new().generate(&file)
+}
+
+fn generate_rust_for_idl(idl: &str) -> String {
+    try_generate_rust_for_idl(idl).expect("codegen error")
+}
+
+/// Field names declared in `pub struct {name} { ... }`, in emitted order.
+fn struct_def_field_names(src: &str, name: &str) -> Vec<String> {
+    let head = format!("pub struct {name} {{\n");
+    let start = src
+        .find(&head)
+        .unwrap_or_else(|| panic!("struct {name} not found in:\n{src}"))
+        + head.len();
+    // Stop at the closing brace line (indented when inside a `module`).
+    let body = &src[start..];
+    let end = body
+        .lines()
+        .position(|l| l.trim() == "}")
+        .unwrap_or_else(|| panic!("unterminated struct {name} in:\n{src}"));
+    body.lines()
+        .take(end)
+        .filter_map(|l| l.trim().strip_prefix("pub "))
+        .filter_map(|l| l.split(':').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn inherited_members_are_flattened_per_xtypes_7_2_2_4_4() {
+    let src = generate_rust_for_idl(
+        "module P { struct Base { long a; }; struct Derived : Base { long b; }; };",
+    );
+    assert!(
+        src.contains("pub a: i32"),
+        "base member must be inlined into Derived:\n{src}"
+    );
+    assert!(
+        !src.contains("pub base:"),
+        "synthetic base field must not exist:\n{src}"
+    );
+    assert_eq!(
+        struct_def_field_names(&src, "Derived"),
+        vec!["a".to_string(), "b".to_string()],
+        "Derived members are the base's followed by its own:\n{src}"
+    );
+}
+
+#[test]
+fn flattened_struct_literals_are_complete_for_derived() {
+    // Regression: decode's `Ok((Self { .. }))` and `Builder::build()`'s struct
+    // literal are driven off `s.fields`; the synthetic `base` field was never
+    // in that list, so every derived type failed to compile with E0063.
+    let src = generate_rust_for_idl("struct Base { long a; }; struct Derived : Base { long b; };");
+    assert_eq!(
+        src.matches("Ok((Self {\n            a,\n            b,\n        }, offset))")
+            .count(),
+        2,
+        "both XCDR1 and XCDR2 decode literals must name every flattened member:\n{src}"
+    );
+    assert!(
+        src.contains("pub struct DerivedBuilder {\n    a: Option<i32>,\n    b: Option<i32>,\n}"),
+        "builder must carry a slot for each flattened member:\n{src}"
+    );
+    assert!(
+        src.contains(
+            "        Ok(Derived {\n            a: self.a.ok_or(\"a is required\")?,\n            b: self.b.ok_or(\"b is required\")?,\n        })"
+        ),
+        "build() literal must initialise every flattened member:\n{src}"
+    );
+    assert!(
+        !src.contains("self.base") && !src.contains("pub base:"),
+        "no phantom base field may survive flattening:\n{src}"
+    );
+}
+
+#[test]
+fn inherited_members_reach_the_wire_for_derived() {
+    let src = generate_rust_for_idl("struct Base { long a; }; struct Derived : Base { long b; };");
+    let derived_encode = src
+        .split("impl Derived {")
+        .nth(1)
+        .expect("Derived impl block");
+    assert!(
+        derived_encode.contains("self.a.to_le_bytes()"),
+        "Derived's encoder must serialize the inherited member:\n{src}"
+    );
+}
+
+#[test]
+fn multi_level_inheritance_flattens_deepest_base_first() {
+    let src = generate_rust_for_idl(
+        "struct B1 { long x; }; struct B2 : B1 { long y; }; struct D : B2 { long z; };",
+    );
+    assert_eq!(
+        struct_def_field_names(&src, "D"),
+        vec!["x".to_string(), "y".to_string(), "z".to_string()],
+        "transitive bases flatten deepest-first:\n{src}"
+    );
+}
+
+#[test]
+fn qualified_base_name_resolves_across_modules() {
+    let src = generate_rust_for_idl(
+        "module A { struct Base { long a; }; }; module B { struct Derived : A::Base { long b; }; };",
+    );
+    assert_eq!(
+        struct_def_field_names(&src, "Derived"),
+        vec!["a".to_string(), "b".to_string()],
+        "module-qualified base must resolve:\n{src}"
+    );
+}
+
+#[test]
+fn bare_base_name_resolves_in_the_enclosing_module() {
+    // Two same-named `Base` structs: the bare reference inside module B must
+    // bind to B::Base, not to the first-declared A::Base.
+    let src = generate_rust_for_idl(
+        "module A { struct Base { long wrong; }; }; module B { struct Base { long right; }; struct Derived : Base { long b; }; };",
+    );
+    assert_eq!(
+        struct_def_field_names(&src, "Derived"),
+        vec!["right".to_string(), "b".to_string()],
+        "bare base binds to the innermost enclosing scope:\n{src}"
+    );
+}
+
+#[test]
+fn flattened_base_fields_keep_their_annotations() {
+    let src = generate_rust_for_idl(
+        "struct Base { @key long id; @optional long opt; }; struct Derived : Base { long b; };",
+    );
+    let derived = src
+        .split("impl ::hdds::api::DDS for Derived {")
+        .nth(1)
+        .expect("Derived DDS impl");
+    assert!(
+        src.contains("pub opt: Option<i32>"),
+        "@optional must survive flattening:\n{src}"
+    );
+    assert!(
+        derived.contains("fn has_key() -> bool { true }"),
+        "@key on an inherited member must key the derived type:\n{src}"
+    );
+    assert!(
+        derived.contains("// Hash @key field: id"),
+        "compute_key must hash the inherited @key member:\n{src}"
+    );
+}
+
+#[test]
+fn extensibility_is_unchanged_by_flattening() {
+    // A @final derived type does not inherit the base's mutability, and a
+    // @mutable derived type keeps its PL_CDR2 single-emission path with the
+    // full flattened member list.
+    let final_src = generate_rust_for_idl(
+        "@mutable struct MBase { long a; }; @final struct FD : MBase { long b; };",
+    );
+    let fd = final_src.split("impl FD {").nth(1).expect("FD impl");
+    assert!(
+        !fd.contains("let emheader ="),
+        "a @final derived type must not adopt the @mutable base's PL_CDR2 framing:\n{final_src}"
+    );
+    assert_eq!(
+        struct_def_field_names(&final_src, "FD"),
+        vec!["a".to_string(), "b".to_string()]
+    );
+
+    let mut_src =
+        generate_rust_for_idl("struct FBase { long a; }; @mutable struct MD : FBase { long b; };");
+    let md = mut_src.split("impl MD {").nth(1).expect("MD impl");
+    assert_eq!(
+        md.matches("let emheader =").count(),
+        2,
+        "@mutable derived type emits one EMHEADER per flattened member:\n{mut_src}"
+    );
+    // MD is declared last, so its emissions run to end-of-output.
+    let md_all = &mut_src[mut_src.find("impl MD {").expect("MD impl")..];
+    assert!(
+        !md_all.contains("pub fn encode_xcdr1_le"),
+        "@mutable derived type keeps its single-version PL_CDR2 emission (no XCDR1 pair):\n{mut_src}"
+    );
+}
+
+#[test]
+fn unresolvable_base_struct_is_a_generator_error() {
+    let err = try_generate_rust_for_idl("struct Derived : Missing { long b; };")
+        .expect_err("unresolvable base must be a generator error, not a panic");
+    assert_eq!(err.kind, crate::error::ErrorKind::UnknownType);
+    assert!(
+        err.message.contains("Missing") && err.message.contains("Derived"),
+        "error must name both the derived struct and the missing base: {err}"
+    );
+}
+
+#[test]
+fn inheritance_cycle_is_a_generator_error() {
+    let err = try_generate_rust_for_idl("struct A : B { long x; }; struct B : A { long y; };")
+        .expect_err("inheritance cycle must be a generator error, not infinite recursion");
+    assert_eq!(err.kind, crate::error::ErrorKind::InvalidSyntax);
+    assert!(
+        err.message.to_lowercase().contains("cycle"),
+        "error must identify the cycle: {err}"
+    );
+
+    let self_err = try_generate_rust_for_idl("struct S : S { long x; };")
+        .expect_err("self-inheritance must be a generator error");
+    assert_eq!(self_err.kind, crate::error::ErrorKind::InvalidSyntax);
+}
+
+#[test]
+fn embedded_derived_type_object_lists_flattened_members() {
+    // The type index the inline TypeObject path queries is built from the
+    // flattened AST, so a struct that embeds a derived type advertises the
+    // inherited members too.
+    let src = generate_rust_for_idl(
+        "struct Base { long a; }; struct Derived : Base { long b; }; struct Outer { Derived d; };",
+    );
+    let outer = src
+        .split("impl ::hdds::api::DDS for Outer {")
+        .nth(1)
+        .expect("Outer DDS impl");
+    let nested = outer
+        .split(r#"CompleteTypeDetail::new("Derived")"#)
+        .nth(1)
+        .expect("inline Derived TypeObject");
+    assert!(
+        nested.contains(r#"CompleteMemberDetail::new("a")"#)
+            && nested.contains(r#"CompleteMemberDetail::new("b")"#),
+        "embedded Derived's TypeObject must carry the inherited member:\n{src}"
+    );
+}
+
+#[test]
+fn derived_member_redeclaration_is_a_generator_error() {
+    // The flattened list is one member sequence; a shadowing name would emit
+    // a duplicate Rust field.
+    let err = try_generate_rust_for_idl("struct Base { long a; }; struct D : Base { long a; };")
+        .expect_err("redeclared inherited member must be a generator error");
+    assert_eq!(err.kind, crate::error::ErrorKind::DuplicateDefinition);
+}
+
+#[test]
+fn flattening_does_not_leak_into_other_backends() {
+    // The C/C++/Python backends render inheritance as composition off the same
+    // parsed AST; the Rust pass must copy, never mutate in place.
+    let mut parser =
+        crate::Parser::try_new("struct Base { long a; }; struct Derived : Base { long b; };")
+            .expect("lexer error");
+    let file = parser.parse().expect("parse error");
+    let _ = RustGenerator::new().generate(&file).expect("codegen error");
+    let py = crate::codegen::Backend::Python
+        .generator()
+        .generate(&file)
+        .expect("python codegen error");
+    assert!(
+        py.contains("class Derived(Base)"),
+        "Python backend must still see the un-flattened AST:\n{py}"
+    );
+}
+
+#[test]
+fn sequential_autoid_numbers_the_flattened_member_sequence() {
+    // XTypes 1.3 ss7.2.2.4.4 + ss7.3.1.2.1.1: with @autoid(SEQUENTIAL) the id
+    // is the member's position in the (base-then-own) member sequence, so a
+    // derived member's id continues past the inherited ones. Default hashed
+    // ids are name-derived and unaffected by flattening.
+    let src = generate_rust_for_idl(
+        "@autoid(SEQUENTIAL) struct SB { long a; long b; }; @autoid(SEQUENTIAL) @mutable struct SD : SB { long c; };",
+    );
+    let sd = src.split("impl SD {").nth(1).expect("SD impl");
+    for id in 0..=2u32 {
+        assert!(
+            sd.contains(&format!("(0x0000000{id}u32 & 0x0fff_ffff)")),
+            "SD member id {id} missing from the flattened sequence:\n{src}"
+        );
+    }
+}
+
+/// Everything the generator emits for `Derived` (definition, encode/decode
+/// impls, DDS impl, builder). All fixtures below declare `Derived` last in its
+/// module, so slicing to end-of-output covers its emissions and no sibling's —
+/// add a struct after `Derived` and this widens.
+fn derived_emission_span(src: &str) -> &str {
+    &src[src
+        .find("pub struct Derived {")
+        .unwrap_or_else(|| panic!("Derived struct def not found in:\n{src}"))..]
+}
+
+#[test]
+fn cross_module_inherited_named_members_are_requalified() {
+    // Generated modules only carry `use super::*`, so a bare `Inner` copied
+    // out of module A into module B neither resolves nor, if B declared its
+    // own `Inner`, would mean the same type.
+    let src = generate_rust_for_idl(
+        "module A { struct Inner { long v; }; struct Base { Inner i; sequence<Inner> xs; }; }; module B { struct Inner { double other; }; struct Derived : A::Base { long b; }; };",
+    );
+    let derived = derived_emission_span(&src);
+    assert!(
+        derived.contains("pub i: A::Inner,") && derived.contains("pub xs: Vec<A::Inner>"),
+        "inherited named members (incl. sequence elements) must be requalified to the base's scope:\n{src}"
+    );
+    assert!(
+        !derived.contains("<Inner>::") && !derived.contains("pub i: Inner,"),
+        "no bare `Inner` may survive the copy into module B, where it would bind to B::Inner:\n{src}"
+    );
+}
+
+#[test]
+fn same_module_inherited_named_members_stay_bare() {
+    // No scope change, no rewrite: requalifying unconditionally would emit
+    // needlessly qualified paths (and churn existing output).
+    let src = generate_rust_for_idl(
+        "module A { struct Inner { long v; }; struct Base { Inner i; }; struct Derived : Base { long b; }; };",
+    );
+    let derived = derived_emission_span(&src);
+    assert!(
+        derived.contains("pub i: Inner,"),
+        "a same-module inherited member keeps its bare type name:\n{src}"
+    );
+}
+
+#[test]
+fn root_scoped_inherited_named_members_stay_bare() {
+    // A base at crate root: its member's type is visible from any module via
+    // the `use super::*` chain, so the bare name is already correct.
+    let src = generate_rust_for_idl(
+        "struct Inner { long v; }; struct Base { Inner i; }; module B { struct Derived : Base { long b; }; };",
+    );
+    let derived = derived_emission_span(&src);
+    assert!(
+        derived.contains("pub i: Inner,"),
+        "a root-scoped inherited member type needs no qualification:\n{src}"
+    );
+}
+
+#[test]
+fn root_scoped_inherited_member_shadowed_in_derived_scope_is_a_generator_error() {
+    // The "fully qualified" name of a ROOT-scoped type IS its bare name, so
+    // a derived module that declares the same name binds the inherited member
+    // to its own type — compiling cleanly with the wrong wire layout
+    // ([f64,i32] instead of [i32,i32]).
+    // A root-anchored `super::Inner` spelling would bind correctly but makes
+    // the name-keyed classifiers miss, which silently changes XCDR2 framing,
+    // so the collision is refused instead.
+    let err = try_generate_rust_for_idl(
+        "struct Inner { long v; }; struct Base { Inner i; }; module B { struct Inner { double other; }; struct Derived : Base { long b; }; };",
+    )
+    .expect_err("a shadowed inherited member type must not silently mis-bind");
+    assert_eq!(err.kind, crate::error::ErrorKind::DuplicateDefinition);
+    assert!(
+        err.message.contains("'Inner'") && err.message.contains("'B::Inner'"),
+        "error must name both the inherited type and the shadowing one: {err}"
+    );
+    assert!(
+        err.message.contains("B::Derived") && err.message.contains("'i'"),
+        "error must locate the member it applies to: {err}"
+    );
+}
+
+#[test]
+fn shadowed_leading_path_segment_is_a_generator_error() {
+    // Same hole one segment along: the qualified spelling `A::Inner` is itself
+    // shadowed inside module B, because B declares its own module A.
+    let err = try_generate_rust_for_idl(
+        "module A { struct Inner { long v; }; struct Base { Inner i; }; }; module B { module A { struct Inner { double other; }; }; struct Derived : A::Base { long b; }; };",
+    )
+    .expect_err("a shadowed leading path segment must not silently mis-bind");
+    assert_eq!(err.kind, crate::error::ErrorKind::DuplicateDefinition);
+    assert!(
+        err.message.contains("'A::Inner'") && err.message.contains("'B::A::Inner'"),
+        "error must name both the inherited type and the shadowing one: {err}"
+    );
+}
+
+#[test]
+fn shadowing_module_does_not_affect_an_unrelated_inherited_member() {
+    // Control for the two errors above: a shadowing declaration whose name is
+    // not the inherited member's type must not block generation.
+    let src = generate_rust_for_idl(
+        "module A { struct Inner { long v; }; struct Base { Inner i; }; }; module B { struct Unrelated { double other; }; struct Derived : A::Base { long b; }; };",
+    );
+    assert!(
+        derived_emission_span(&src).contains("pub i: A::Inner,"),
+        "an unrelated shadow must not disturb requalification:\n{src}"
+    );
 }
