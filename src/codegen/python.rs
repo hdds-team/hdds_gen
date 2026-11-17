@@ -58,7 +58,7 @@ fn is_appendable_struct(s: &Struct) -> bool {
 }
 
 /// Compute member ID for a field in a mutable struct.
-/// Priority: @id annotation > @autoid(SEQUENTIAL) > FNV-1a hash (`XTypes` ss7.3.1.2.1.2)
+/// Priority: @id annotation > @autoid(SEQUENTIAL) > MD5-derived hash (`XTypes` ss7.3.1.2.1.2)
 fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
     // Check for explicit @id annotation
     for ann in &field.annotations {
@@ -77,18 +77,7 @@ fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
         return idx as u32;
     }
 
-    // Default: FNV-1a 32-bit hash masked to 28 bits
-    fnv1a_member_id(&field.name)
-}
-
-/// FNV-1a 32-bit hash masked to 28 bits (`XTypes` ss7.3.1.2.1.2)
-fn fnv1a_member_id(name: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in name.as_bytes() {
-        h ^= u32::from(*b);
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h & 0x0fff_ffff
+    crate::codegen::hash_member_id(&field.name)
 }
 
 /// Get LC (Length Code) value based on fixed size

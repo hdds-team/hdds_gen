@@ -550,9 +550,7 @@ impl RustGenerator {
     /// Priority:
     /// - `@id` on the field
     /// - `@autoid(SEQUENTIAL)` on the struct -> use declaration order
-    /// - default/`@autoid(HASH)` -> FNV-1a 32-bit on field name & `0x0FFF_FFFF`
-    ///
-    /// Algorithm: FNV-1a 32-bit (`XTypes` ss7.3.1.2.1.2), masked to 28 bits.
+    /// - default/`@autoid(HASH)` -> MD5-derived hash per `XTypes` ss7.3.1.2.1.2
     pub(crate) fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
         for ann in &field.annotations {
             if let Annotation::Id(id) = ann {
@@ -570,17 +568,7 @@ impl RustGenerator {
             return idx as u32;
         }
 
-        Self::fnv1a_member_id(&field.name)
-    }
-
-    /// FNV-1a 32-bit hash masked to 28 bits, per `XTypes` ss7.3.1.2.1.2.
-    pub(crate) fn fnv1a_member_id(name: &str) -> u32 {
-        let mut h: u32 = 0x811c_9dc5; // FNV offset basis
-        for b in name.as_bytes() {
-            h ^= u32::from(*b);
-            h = h.wrapping_mul(0x0100_0193); // FNV prime
-        }
-        h & 0x0fff_ffff
+        crate::codegen::hash_member_id(&field.name)
     }
 }
 

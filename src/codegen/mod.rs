@@ -31,6 +31,13 @@ pub mod typescript;
 use crate::ast::IdlFile;
 use crate::error::Result;
 
+/// Hashed member ID (`XTypes` 1.3 ss7.3.1.2.1.2): first 4 bytes of MD5(name), LE, masked to 28 bits.
+pub(crate) fn hash_member_id(name: &str) -> u32 {
+    use md5::{Digest, Md5};
+    let d = Md5::digest(name.as_bytes());
+    u32::from_le_bytes([d[0], d[1], d[2], d[3]]) & 0x0fff_ffff
+}
+
 /// Code generation backend trait
 pub trait CodeGenerator {
     /// Generate code from IDL AST
@@ -71,6 +78,41 @@ impl Backend {
             Self::Micro => Box::new(micro::MicroGenerator::new()),
             Self::CMicro => Box::new(c_micro::CMicroGenerator::new()),
             Self::TypeScript => Box::new(typescript::TypeScriptGenerator::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hash_member_id, Backend};
+
+    #[test]
+    fn hashed_member_ids_use_md5_per_xtypes_7_3_1_2_1_2() {
+        // Expected values: MD5(name)[0..4] as LE u32, masked to 28 bits.
+        assert_eq!(hash_member_id("sensor_id"), 0x0A86_6DD9);
+        assert_eq!(hash_member_id("temperature"), 0x0738_F4EE);
+        assert_eq!(hash_member_id("points"), 0x0E81_AB0A);
+    }
+
+    #[test]
+    fn all_backends_emit_the_same_hashed_member_ids() {
+        let idl = "@mutable struct Reading { long sensor_id; double temperature; };";
+        let ast = crate::Parser::try_new(idl)
+            .expect("lexer error")
+            .parse()
+            .expect("parse error");
+        for backend in [
+            Backend::Rust,
+            Backend::Cpp,
+            Backend::Python,
+            Backend::TypeScript,
+        ] {
+            let code = backend.generator().generate(&ast).expect("codegen error");
+            assert!(code.contains("0x0A866DD9"), "sensor_id id missing:\n{code}");
+            assert!(
+                code.contains("0x0738F4EE"),
+                "temperature id missing:\n{code}"
+            );
         }
     }
 }
