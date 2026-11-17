@@ -17,29 +17,60 @@ pub(crate) mod structs;
 pub(crate) mod typedefs;
 pub(crate) mod unions;
 
-pub(crate) use module::merge_module_into;
-
 use crate::ast::Definition;
 use crate::error::{ErrorKind, ParseError, Result};
 use crate::token::TokenKind;
+use crate::types::Annotation;
 
 use super::Parser;
 
 impl Parser {
-    /// Parse any top-level definition (module, struct, union, etc.).
-    pub(super) fn parse_definition(&mut self) -> Result<Definition> {
+    /// Parse any top-level definition (module, struct, union, etc.); a
+    /// typedef with several declarators gives one definition per name.
+    pub(super) fn parse_definition(&mut self) -> Result<Vec<Definition>> {
         if let Some(annotation_decl) = self.try_parse_annotation_declaration()? {
-            return Ok(annotation_decl);
+            return Ok(vec![annotation_decl]);
         }
 
         let annotations = self.collect_leading_annotations()?;
+        let seq = self.next_seq();
+        let defs = self.parse_definition_body(annotations)?;
+        for def in &defs {
+            if let Definition::Enum(e) = def {
+                for v in &e.variants {
+                    self.declare(crate::scope::join(&self.scope_stack, &v.name), seq);
+                }
+            }
+            if let Some((name, _)) = crate::scope::declared_name(def) {
+                let global = crate::scope::join(&self.scope_stack, name);
+                if matches!(
+                    def,
+                    Definition::Struct(_) | Definition::Union(_) | Definition::Typedef(_)
+                ) {
+                    self.def_seq.insert(global.clone(), seq);
+                }
+                self.declare(global, seq);
+            }
+        }
+        Ok(defs)
+    }
+
+    fn parse_definition_body(&mut self, annotations: Vec<Annotation>) -> Result<Vec<Definition>> {
+        if self.check(&TokenKind::Typedef) {
+            return Ok(self
+                .parse_typedef()?
+                .into_iter()
+                .map(|t| {
+                    Self::attach_definition_annotations(Definition::Typedef(t), annotations.clone())
+                })
+                .collect());
+        }
 
         let definition = match self.peek() {
             TokenKind::Module => self.parse_module().map(Definition::Module),
             TokenKind::Struct => self
                 .try_parse_struct_forward()
                 .map_or_else(|| self.parse_struct().map(Definition::Struct), Ok),
-            TokenKind::Typedef => self.parse_typedef().map(Definition::Typedef),
             TokenKind::Enum => self.parse_enum().map(Definition::Enum),
             TokenKind::Union => self
                 .try_parse_union_forward()
@@ -50,6 +81,14 @@ impl Parser {
             TokenKind::Interface => self.parse_interface().map(Definition::Interface),
             #[cfg(feature = "interfaces")]
             TokenKind::Exception => self.parse_exception().map(Definition::Exception),
+            #[cfg(not(feature = "interfaces"))]
+            TokenKind::Interface | TokenKind::Exception => Err(ParseError::new(
+                ErrorKind::UnexpectedToken,
+                self.current_position(),
+                "IDL interfaces and exceptions are not supported by this build of \
+                 hddsgen (they are parsed only when built with `--features \
+                 interfaces`, and no code is generated for them)",
+            )),
             TokenKind::Const => self.parse_const().map(Definition::Const),
             _ => Err(ParseError::new(
                 ErrorKind::UnexpectedToken,
@@ -58,6 +97,9 @@ impl Parser {
             )),
         }?;
 
-        Ok(Self::attach_definition_annotations(definition, annotations))
+        Ok(vec![Self::attach_definition_annotations(
+            definition,
+            annotations,
+        )])
     }
 }

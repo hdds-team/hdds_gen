@@ -1,0 +1,15 @@
+// TypeObject oracle beyond the data path corpus: extensibility flags of an
+// enumeration and a bitmask, alias objects (of a primitive, of an alias, of
+// an array, of a sequence), arrays whose element is an alias (the element
+// keeps the alias identifier). cyclone_typeobjects_extra.txt is
+// extract_typeobjects.py run on Cyclone DDS 0.11 idlc's output for this
+// file. Inner8 is the corpus's; the tests generate the rest.
+@final struct Inner8 { long long x; long y; };
+@appendable enum EApp { EA_X, EA_Y };
+@appendable @bit_bound(8) bitmask BMApp { BA_0, BA_1 };
+typedef long MyLong;
+typedef MyLong MyLong2;
+typedef long LArr[2];
+typedef sequence<Inner8, 3> InnerSeq;
+@final struct AliasMore { EApp e; BMApp b; MyLong2 l; LArr a; InnerSeq s; };
+@final struct ArrAlias { MyLong l[3]; LArr la[2]; MyLong2 m[2][2]; };

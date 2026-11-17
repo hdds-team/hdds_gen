@@ -23,18 +23,18 @@ fn build_msg_struct() -> Struct {
 
     let str_field = Field::new(
         "name",
-        IdlType::Sequence {
-            inner: Box::new(IdlType::Primitive(Char)),
-            bound: Some(16),
+        IdlType::BoundedString {
+            wide: false,
+            bound: 16,
         },
     );
     s.add_field(str_field);
 
     let wide_field = Field::new(
         "wname",
-        IdlType::Sequence {
-            inner: Box::new(IdlType::Primitive(WChar)),
-            bound: Some(32),
+        IdlType::BoundedString {
+            wide: true,
+            bound: 32,
         },
     );
     s.add_field(wide_field);
@@ -230,4 +230,19 @@ fn pretty_struct_field_alignment_columns() {
         .collect();
     assert!(cols.len() >= 3, "expected three fields aligned\n{rendered}");
     assert!(cols.iter().all(|&c| c == cols[0]));
+}
+
+#[test]
+fn union_key_discriminator_round_trips() -> Result<(), String> {
+    let idl = "enum K { A, B };\nunion C switch (@key K) { case A: long a; case B: double b; };\n";
+    let mut p = Parser::try_new(idl).map_err(|e| e.to_string())?;
+    let ast = p.parse().map_err(|e| e.to_string())?;
+    let keyed = ast
+        .definitions
+        .iter()
+        .any(|d| matches!(d, Definition::Union(u) if u.discriminator_is_key()));
+    assert!(keyed, "the discriminator is a key");
+    let printed = to_idl(&ast);
+    assert!(printed.contains("switch(@key K)"), "{printed}");
+    Ok(())
 }

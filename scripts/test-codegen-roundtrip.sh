@@ -155,6 +155,19 @@ else
 #include <math.h>
 #include "interop_types.h"
 
+/* The decoder takes the storage of the string and the sequence from an
+ * allocator; it never writes through a pointer the caller set (without
+ * one, such a value is refused with -CDR_OUT_OF_MEMORY). */
+static _Alignas(16) unsigned char arena[4096];
+static size_t arena_used;
+static void* bump(void* ctx, size_t size) {
+    size_t at = (arena_used + 15u) & ~(size_t)15u;
+    (void)ctx;
+    if (at > sizeof(arena) || size > sizeof(arena) - at) { return NULL; }
+    arena_used = at + size;
+    return arena + at;
+}
+
 int main(void) {
     /* Build SensorReading with deterministic values */
     float hist[] = {1.0f, 2.0f, 3.0f};
@@ -184,12 +197,8 @@ int main(void) {
     /* Decode */
     SensorReading out;
     memset(&out, 0, sizeof(out));
-    char label_buf[256];
-    out.label = label_buf;
-    float hist_out[64];
-    out.history.data = hist_out;
 
-    int dec = sensorreading_decode_cdr2_le(&out, buf, (size_t)enc);
+    int dec = sensorreading_decode_cdr2_le_alloc(&out, buf, (size_t)enc, bump, NULL);
     if (dec != enc) {
         fprintf(stderr, "FAIL: decode returned %d, encode was %d\n", dec, enc);
         return 2;

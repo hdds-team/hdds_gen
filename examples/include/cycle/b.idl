@@ -4,6 +4,6 @@
 #include "a.idl"
 
 struct B {
-    int32_t b;
+    int32_t b_value;
 };
 

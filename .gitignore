@@ -13,8 +13,6 @@ CODEGEN_CONVENTIONS.md
 docs/CODEGEN_CONFORMANCE.md
 BUILD_NUMBER
 .private/
-.claude/
-CLAUDE.md
 WIP-*.md
 WIP_*.md
 AUDIT_*.md
@@ -32,3 +30,6 @@ scripts/ros2_smoke_test.sh
 *.swp
 *.swo
 *~
+
+# Local engineering backlog - internal only, do not publish (2026-06-25)
+/TODO.md

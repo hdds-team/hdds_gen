@@ -1,0 +1,24 @@
+# @mutable unions (DDS-XTypes 1.3 7.4.3.5.3 rules 27-28), which Cyclone DDS
+# 0.11 does not support, built by spec_vectors.py from the specification
+# text (see its header), for p=1, z=9 and each case: a=10, s="hello",
+# d=0.25 (encapsulation header included). The discriminator is member 0,
+# the cases members 1, 2, 3.
+# `spec=` is the form hddsgen writes: the discriminator's header carries the
+# must-understand flag ("the discriminator member shall always have the must
+# understand attribute set to true", spec text lines 2299-2300); XCDR1
+# parameters use the extended header with the exact member length
+# (7.4.1.2.2). `alt=` is another form a writer may use, which a reader must
+# read into the same sample: XCDR1 short headers with lengths padded to the
+# next parameter (DDSI-RTPS 2.5 lines 8560-8561), and in both versions the
+# discriminator without the flag, which changes nothing for a member the
+# reader knows (lines 6085-6087).
+#
+#   @mutable union UM switch (long) { case 1: long a; case 2: string s; case 3: double d; };
+#   @final struct HoldUM { octet p; UM u; long z; };
+#
+HoldUM_1 xcdr1 alt=00010000010000000000040001000000010004000a000000027f000009000000 spec=0001000001000000017f0800000000400400000001000000017f080001000000040000000a000000027f000009000000
+HoldUM_1 xcdr2 alt=0007000001000000100000000000002001000000010000200a00000009000000 spec=000700000100000010000000000000a001000000010000200a00000009000000
+HoldUM_2 xcdr1 alt=0001000001000000000004000200000002000c000600000068656c6c6f000000027f000009000000 spec=0001000001000000017f0800000000400400000002000000017f0800020000000a0000000600000068656c6c6f000000027f000009000000
+HoldUM_2 xcdr2 alt=0007000001000000160000000000002002000000020000500600000068656c6c6f00000009000000 spec=000700000100000016000000000000a002000000020000500600000068656c6c6f00000009000000
+HoldUM_3 xcdr1 alt=0001000001000000000004000300000003000800000000000000d03f027f000009000000 spec=0001000001000000017f0800000000400400000003000000017f08000300000008000000000000000000d03f027f000009000000
+HoldUM_3 xcdr2 alt=000700000100000014000000000000200300000003000030000000000000d03f09000000 spec=000700000100000014000000000000a00300000003000030000000000000d03f09000000

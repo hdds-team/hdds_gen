@@ -143,18 +143,18 @@ fn test_parse_annotations_unit_and_range() {
 
     // @range(min=0, max=100)
     let ann1 = &s.fields[1].annotations;
-    assert!(ann1
-        .iter()
-        .any(|a| matches!(a, Annotation::Range{min, max} if min == "0" && max == "100")));
+    assert!(ann1.iter().any(
+        |a| matches!(a, Annotation::Range{min, max} if min.value == "0" && max.value == "100")
+    ));
 
     // @min(1) @max(10)
     let ann2 = &s.fields[2].annotations;
     assert!(ann2
         .iter()
-        .any(|a| matches!(a, Annotation::Min(v) if v == "1")));
+        .any(|a| matches!(a, Annotation::Min(v) if v.value == "1")));
     assert!(ann2
         .iter()
-        .any(|a| matches!(a, Annotation::Max(v) if v == "10")));
+        .any(|a| matches!(a, Annotation::Max(v) if v.value == "10")));
 
     // @autoid(SEQUENTIAL) captured on field annotations (we're permissive here)
     let ann3 = &s.fields[3].annotations;
@@ -181,16 +181,74 @@ fn parse_wchar_wstring_and_bounds() {
         s.fields[1].field_type,
         IdlType::Primitive(PrimitiveType::WString)
     ));
-    if let IdlType::Sequence { inner, bound } = &s.fields[2].field_type {
-        assert!(matches!(**inner, IdlType::Primitive(PrimitiveType::WChar)));
-        assert_eq!(*bound, Some(256));
-    } else {
-        assert!(
-            matches!(&s.fields[2].field_type, IdlType::Sequence { .. }),
-            "expected bounded wstring as sequence<wchar>, got {:?}",
-            s.fields[2].field_type
-        );
-    }
+    assert_eq!(
+        s.fields[2].field_type,
+        IdlType::BoundedString {
+            wide: true,
+            bound: 256
+        }
+    );
+}
+
+/// `sequence<char, N>` and `string<N>` are different types: an element
+/// count and no NUL against a length counting the NUL (DDS-XTypes 1.3
+/// 7.4.3.5.3 rules 3 and 11).
+#[test]
+fn bounded_sequence_of_char_is_not_a_bounded_string() {
+    let mut parser =
+        Parser::try_new("struct S { string<4> a; sequence<char, 4> b; sequence<wchar> c; };")
+            .expect("lex");
+    let file = parser.parse().expect("parse");
+    let s = as_struct(&file.definitions[0]).expect("Expected struct");
+    assert_eq!(
+        s.fields[0].field_type,
+        IdlType::BoundedString {
+            wide: false,
+            bound: 4
+        }
+    );
+    assert_eq!(
+        s.fields[1].field_type,
+        IdlType::Sequence {
+            inner: Box::new(IdlType::Primitive(PrimitiveType::Char)),
+            bound: Some(4)
+        }
+    );
+    assert!(matches!(
+        &s.fields[2].field_type,
+        IdlType::Sequence { inner, bound: None } if **inner == IdlType::Primitive(PrimitiveType::WChar)
+    ));
+}
+
+/// Union labels: TRUE / FALSE, characters, negative integers, scoped
+/// enumerators.
+#[test]
+fn union_labels_of_every_literal_kind() {
+    let src = "module m { enum K { A, B }; };
+        union UB switch (boolean) { case TRUE: long t; case FALSE: short f; };
+        union UC switch (char) { case 'a': long x; };
+        union UN switch (long) { case -1: long n; case 2: short p; };
+        union UK switch (m::K) { case m::A: long a; case ::m::B: short b; };";
+    let mut parser = Parser::try_new(src).expect("lex");
+    let file = parser.parse().expect("parse");
+    let labels: Vec<String> = file
+        .definitions
+        .iter()
+        .filter_map(|d| match d {
+            Definition::Union(u) => Some(u),
+            _ => None,
+        })
+        .flat_map(|u| u.cases.iter())
+        .flat_map(|c| c.labels.iter())
+        .map(|l| match l {
+            crate::ast::UnionLabel::Value(v) => v.clone(),
+            crate::ast::UnionLabel::Default => "default".to_string(),
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["TRUE", "FALSE", "'a'", "-1", "2", "m::A", "::m::B"]
+    );
 }
 
 #[test]
@@ -306,13 +364,15 @@ fn test_parse_module() {
     }
 }
 
+/// A reopened module stays where it is reopened (declaration order kept);
+/// `scope::merge_reopened_modules` merges for the targets that need it.
 #[test]
-fn test_module_reopening_merges() {
+fn test_module_reopening_keeps_declaration_order() {
     let input = r#"
         module Foo {
             struct A { int32_t x; };
         };
-
+        struct Between { Foo::A a; };
         module Foo {
             struct B { int32_t y; };
         };
@@ -320,17 +380,29 @@ fn test_module_reopening_merges() {
 
     let mut parser = Parser::try_new(input).expect("lex");
     let file = parser.parse().expect("parse with reopening");
-    assert_eq!(file.definitions.len(), 1, "expected a single merged module");
-    let m = as_module(&file.definitions[0]).expect("expected merged module");
-    assert_eq!(m.name, "Foo");
-    let mut names = vec![];
-    for d in &m.definitions {
-        if let Definition::Struct(s) = d {
-            names.push(s.name.clone());
-        }
-    }
-    names.sort();
-    assert_eq!(names, vec!["A".to_string(), "B".to_string()]);
+    let kinds: Vec<&str> = file
+        .definitions
+        .iter()
+        .map(|d| match d {
+            Definition::Module(m) => m.name.as_str(),
+            Definition::Struct(s) => s.name.as_str(),
+            _ => "?",
+        })
+        .collect();
+    assert_eq!(kinds, ["Foo", "Between", "Foo"]);
+
+    let merged = crate::scope::merge_reopened_modules(&file);
+    assert_eq!(merged.definitions.len(), 2, "Foo merged, Between kept");
+    let m = as_module(&merged.definitions[0]).expect("expected merged module");
+    let names: Vec<&str> = m
+        .definitions
+        .iter()
+        .filter_map(|d| match d {
+            Definition::Struct(s) => Some(s.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["A", "B"]);
 }
 
 #[test]
@@ -428,4 +500,50 @@ fn test_parse_default_annotation() {
     let enabled = &s.fields[2];
     assert_eq!(enabled.name, "enabled");
     assert_eq!(enabled.get_default(), Some("true"));
+}
+
+#[cfg(not(feature = "interfaces"))]
+#[test]
+fn test_interface_keyword_without_feature_gives_clear_diagnostic() {
+    let input = r#"
+        interface Greeter {
+            string hello(in string name);
+        };
+    "#;
+
+    let mut parser = Parser::try_new(input).expect("lex");
+    let err = parser.parse().expect_err("interface should fail to parse");
+    assert!(
+        err.message.contains("--features interfaces"),
+        "unexpected message: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("no code is generated"),
+        "unexpected message: {}",
+        err.message
+    );
+}
+
+#[cfg(not(feature = "interfaces"))]
+#[test]
+fn test_exception_keyword_without_feature_gives_clear_diagnostic() {
+    let input = r#"
+        exception MyError {
+            int32_t code;
+        };
+    "#;
+
+    let mut parser = Parser::try_new(input).expect("lex");
+    let err = parser.parse().expect_err("exception should fail to parse");
+    assert!(
+        err.message.contains("--features interfaces"),
+        "unexpected message: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("no code is generated"),
+        "unexpected message: {}",
+        err.message
+    );
 }

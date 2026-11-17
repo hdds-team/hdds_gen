@@ -5,7 +5,7 @@
 //!
 //! Renders IDL bitset and bitmask definitions back to source format.
 
-use super::helpers::{indent, push_fmt, render_annotation};
+use super::helpers::{ident, indent, push_fmt, render_annotation};
 use crate::ast::{Bitmask, Bitset};
 use std::fmt::Write;
 
@@ -16,7 +16,10 @@ pub(super) fn push_bitset(out: &mut String, b: &Bitset, level: usize) {
             format_args!("{}{}\n", indent(level), render_annotation(ann)),
         );
     }
-    push_fmt(out, format_args!("{}bitset {} {{\n", indent(level), b.name));
+    push_fmt(
+        out,
+        format_args!("{}bitset {} {{\n", indent(level), ident(&b.name)),
+    );
     for field in &b.fields {
         if field.annotations.is_empty() {
             push_fmt(
@@ -25,7 +28,7 @@ pub(super) fn push_bitset(out: &mut String, b: &Bitset, level: usize) {
                     "{}bitfield<{}> {};\n",
                     indent(level + 1),
                     field.width,
-                    field.name
+                    ident(&field.name)
                 ),
             );
         } else {
@@ -39,7 +42,7 @@ pub(super) fn push_bitset(out: &mut String, b: &Bitset, level: usize) {
                     "{}bitfield<{}> {}{};\n",
                     indent(level + 1),
                     field.width,
-                    field.name,
+                    ident(&field.name),
                     extras
                 ),
             );
@@ -57,14 +60,14 @@ pub(super) fn push_bitmask(out: &mut String, m: &Bitmask, level: usize) {
     }
     push_fmt(
         out,
-        format_args!("{}bitmask {} {{\n", indent(level), m.name),
+        format_args!("{}bitmask {} {{\n", indent(level), ident(&m.name)),
     );
     for (idx, flag) in m.flags.iter().enumerate() {
         let sep = if idx + 1 == m.flags.len() { "" } else { "," };
         if flag.annotations.is_empty() {
             push_fmt(
                 out,
-                format_args!("{}{}{}\n", indent(level + 1), flag.name, sep),
+                format_args!("{}{}{}\n", indent(level + 1), ident(&flag.name), sep),
             );
         } else {
             let mut annot_line = String::new();
@@ -81,7 +84,7 @@ pub(super) fn push_bitmask(out: &mut String, m: &Bitmask, level: usize) {
                     indent(level + 1),
                     annot_line,
                     indent(level + 1),
-                    flag.name,
+                    ident(&flag.name),
                     sep
                 ),
             );

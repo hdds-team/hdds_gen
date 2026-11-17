@@ -32,6 +32,7 @@ pub(super) enum ConstValue {
     Float(f64),
     Bool(bool),
     Str(String),
+    Char(char),
 }
 
 impl std::fmt::Display for ConstValue {
@@ -41,6 +42,7 @@ impl std::fmt::Display for ConstValue {
             Self::Float(v) => write!(f, "{v}"),
             Self::Bool(b) => write!(f, "{b}"),
             Self::Str(s) => write!(f, "{s}"),
+            Self::Char(c) => write!(f, "{c}"),
         }
     }
 }
@@ -53,6 +55,7 @@ impl ConstValue {
             Self::Int(i) => *i != 0,
             Self::Float(f) => *f != 0.0,
             Self::Str(s) => !s.is_empty(),
+            Self::Char(c) => *c != '\0',
         }
     }
 
@@ -228,32 +231,15 @@ impl Parser {
                 self.advance();
                 Ok(v)
             }
-            TokenKind::Identifier(name) => {
-                let mut id = name.clone();
-                let pos = self.current_position();
+            TokenKind::CharLiteral(c) => {
+                let v = ConstValue::Char(*c);
                 self.advance();
-                // Handle scoped identifiers (e.g., my_mod::my_const)
-                while self.check(&TokenKind::DoubleColon) {
-                    self.advance(); // consume ::
-                    if let TokenKind::Identifier(next) = self.peek() {
-                        id.push_str("::");
-                        id.push_str(next);
-                        self.advance();
-                    } else {
-                        return Err(ParseError::new(
-                            ErrorKind::InvalidSyntax,
-                            self.current_position(),
-                            "Expected identifier after '::'",
-                        ));
-                    }
-                }
-                self.const_env.get(&id).cloned().ok_or_else(|| {
-                    ParseError::new(
-                        ErrorKind::InvalidSyntax,
-                        pos,
-                        format!("Unknown identifier in const expression: {id}"),
-                    )
-                })
+                Ok(v)
+            }
+            TokenKind::Identifier(_) | TokenKind::DoubleColon => {
+                let pos = self.current_position();
+                let name = self.parse_scoped_name("const expression")?;
+                self.lookup_const(&name, pos)
             }
             _ => Err(ParseError::new(
                 ErrorKind::InvalidSyntax,

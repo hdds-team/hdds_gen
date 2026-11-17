@@ -61,6 +61,81 @@ fn validate_enum_duplicate_names() {
         .any(|d| d.message.contains("duplicate enumerator 'Red'")));
 }
 
+fn enum_errors(input: &str) -> Vec<String> {
+    validate(&parse_idl(input))
+        .into_iter()
+        .filter(|d| d.level == Level::Error)
+        .map(|d| d.message)
+        .collect()
+}
+
+#[test]
+fn enum_values_follow_the_previous_enumerator() {
+    let ast = parse_idl("enum E { A, B, C = 10, D, F = -5, G, H = 2, I };");
+    let e = ast
+        .definitions
+        .iter()
+        .find_map(|d| match d {
+            Definition::Enum(e) => Some(e),
+            _ => None,
+        })
+        .expect("an enum");
+    assert_eq!(e.resolved_values(), [0, 1, 10, 11, -5, -4, 2, 3]);
+    assert!(enum_errors("enum E { A, B, C = 10, D, F = -5, G, H = 2, I };").is_empty());
+}
+
+#[test]
+fn enum_with_two_enumerators_of_one_value_is_refused() {
+    // Explicit and explicit.
+    let errs = enum_errors("enum E { A = 1, B = 1 };");
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("'A' and 'B' have the same value 1")),
+        "{errs:?}"
+    );
+    // An explicit value equal to a later implicit one.
+    let errs = enum_errors("enum E { A = 1, B = 0, C };");
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("'A' and 'C' have the same value 1")),
+        "{errs:?}"
+    );
+    // Implicit after a negative value lands on an earlier one.
+    let errs = enum_errors("enum E { A = 0, B = -1, C };");
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("'A' and 'C' have the same value 0")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn enum_value_outside_its_holder_is_refused() {
+    let errs = enum_errors("enum E { A = 2147483647, B };");
+    assert!(
+        errs.iter().any(|m| m.contains("'B' has value 2147483648")),
+        "{errs:?}"
+    );
+    let errs = enum_errors("enum E { A = -2147483649 };");
+    assert!(
+        errs.iter().any(|m| m.contains("'A' has value -2147483649")),
+        "{errs:?}"
+    );
+    // @bit_bound 1-8 is an Int8, 9-16 an Int16.
+    let errs = enum_errors("@bit_bound(8) enum E { A = 127, B };");
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("'B' has value 128") && m.contains("Int8")),
+        "{errs:?}"
+    );
+    let errs = enum_errors("@bit_bound(16) enum E { A = 40000 };");
+    assert!(errs.iter().any(|m| m.contains("Int16")), "{errs:?}");
+    // The edges of each holder are accepted.
+    assert!(enum_errors("@bit_bound(8) enum E { A = -128, B = 127 };").is_empty());
+    assert!(enum_errors("@bit_bound(16) enum E { A = -32768, B = 32767 };").is_empty());
+    assert!(enum_errors("enum E { A = -2147483648, B = 2147483647 };").is_empty());
+}
+
 #[test]
 fn validate_unit_on_non_numeric_warns() {
     let input = r#"struct S { @unit("m") string name; };"#;
@@ -95,51 +170,67 @@ fn validate_unresolved_named_type_warns() {
         .any(|d| d.message.contains("Unresolved type reference: UnknownType")));
 }
 
+/// An unqualified name no enclosing scope declares does not resolve, even
+/// when modules elsewhere declare it (IDL 4.2 7.5.2); the diagnostic names
+/// those declarations. A qualified name from the root resolves.
 #[test]
-fn validate_fqn_ambiguous_and_fqn_ok() {
+fn validate_unqualified_name_not_in_scope() {
     let input = r#"
         module A { struct X { int32_t a; }; };
         module B { struct X { int32_t b; }; };
         struct UseAmb { X field; };
         struct UseOk { A::X ax; };
     "#;
-    let ast = parse_idl(input);
-    let diags = validate(&ast);
-    assert!(diags
-        .iter()
-        .any(|d| d.message.contains("Ambiguous type reference: X")));
-    // ensure fully-qualified reference did not produce unresolved/ambiguous
-    assert!(!diags
-        .iter()
-        .any(|d| d.message.contains("A::X") && d.message.contains("Unresolved")));
+    let diags = validate(&parse_idl(input));
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["Unresolved type reference: X (not visible from its scope; declared as A::X, B::X)"]
+    );
 }
 
+/// A qualified name resolves its first segment from the innermost scope,
+/// then the rest in that scope only (IDL 4.2 7.5.1): `Inner::X` from `A`
+/// where `A::Inner` lacks `X` does not reach `::Inner::X`.
 #[test]
-fn validate_ambiguous_ranking_prefers_current_module() {
+fn validate_qualified_name_first_segment_rule() {
     let input = r#"
-        module A { module Inner { struct X { int32_t a; }; struct Use { X f; }; }; };
+        module Inner { struct X { int32_t r; }; };
+        module A { module Inner { struct Y { int32_t a; }; };
+            struct Use { Inner::X f; };
+            struct Fine { Inner::Y g; ::Inner::X h; };
+        };
+    "#;
+    let diags = validate(&parse_idl(input));
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["Unresolved type reference: Inner::X (not visible from its scope; declared as Inner::X)"]
+    );
+}
+
+/// IDL 4.2 7.5: a relative name is the one declared by the innermost
+/// enclosing scope, even when another module declares the same name; an
+/// absolute name (`::X`) is looked up from the root only.
+#[test]
+fn validate_innermost_scope_and_absolute_names() {
+    let input = r#"
+        struct X { int32_t r; };
+        module A { module Inner { struct X { int32_t a; }; struct Near { X f; ::X g; A::Inner::X h; }; }; };
         module B { struct X { int32_t b; }; };
     "#;
-    let ast = parse_idl(input);
-    let diags = validate(&ast);
-    // Expect an ambiguous error for unqualified X used inside A::Inner::Use
-    // and the first candidate should be A::Inner::X (nearest by context)
-    let msg = diags
-        .iter()
-        .find(|d| d.message.starts_with("Ambiguous type reference: X"))
-        .map(|d| d.message.clone())
-        .unwrap_or_default();
-    assert!(msg.contains("candidates:"));
-    // Check ordering hint
-    // Extract substring after candidates:
-    let tail = msg
-        .split_once("candidates:")
-        .map_or("", |(_, remainder)| remainder);
+    let diags = validate(&parse_idl(input));
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let diags = validate(&parse_idl(
+        "module A { struct X { long a; }; struct U { ::X f; }; };",
+    ));
     assert!(
-        !tail.is_empty(),
-        "ambiguous message missing candidates list: {msg}"
+        diags
+            .iter()
+            .any(|d| d.message.starts_with("Unresolved type reference: ::X ")),
+        "{diags:?}"
     );
-    assert!(tail.trim_start().starts_with("A::Inner::X"));
 }
 
 #[test]

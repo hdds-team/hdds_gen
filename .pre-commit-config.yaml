@@ -49,6 +49,9 @@ repos:
             for f in examples/canonical/*.idl; do
               tmp=$(mktemp)
               cargo run --quiet --bin hddsgen -- fmt "$f" > "$tmp"
-              diff -u "$f" "$tmp"
+              sed -n '1p' "$f" | grep -qx '// SPDX-License-Identifier: Apache-2.0 OR MIT'
+              sed -n '2p' "$f" | grep -qx '// Copyright (c) 2025-2026 naskel.com'
+              sed -n '3p' "$f" | grep -qx ''
+              diff -u <(tail -n +4 "$f") "$tmp"
               rm -f "$tmp"
             done

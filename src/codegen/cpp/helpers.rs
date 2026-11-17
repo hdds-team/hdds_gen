@@ -17,25 +17,22 @@ pub(super) fn last_ident(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
-/// Returns the last identifier as an owned String
-pub(super) fn last_ident_owned(name: &str) -> String {
-    last_ident(name).to_string()
-}
-
 pub(super) fn type_to_cpp(idl_type: &IdlType) -> String {
     match idl_type {
+        // `string<N>` / `wstring<N>`: N characters, NUL-terminated when
+        // shorter.
+        IdlType::BoundedString { wide, bound } => {
+            let c = if *wide { "wchar_t" } else { "char" };
+            format!("std::array<{c}, {bound}>")
+        }
         IdlType::Primitive(p) => match p {
             PrimitiveType::Fixed { digits, scale } => format!("Fixed<{digits}, {scale}>"),
             other => other.to_cpp_name().to_string(),
         },
         IdlType::Named(name) => name.clone(),
-        IdlType::Sequence { inner, bound } => {
-            let inner_type = type_to_cpp(inner);
-            bound.as_ref().map_or_else(
-                || format!("std::vector<{inner_type}>"),
-                |n| format!("std::array<{inner_type}, {n}>"),
-            )
-        }
+        // A sequence (`sequence<char>` included) holds 0 to N elements; the
+        // codec enforces the bound on both sides.
+        IdlType::Sequence { inner, .. } => format!("std::vector<{}>", type_to_cpp(inner)),
         IdlType::Map { key, value, .. } => format!(
             "std::map<{k}, {v}>",
             k = type_to_cpp(key),

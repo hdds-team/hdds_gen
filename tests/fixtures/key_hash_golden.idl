@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Copyright (c) 2025-2026 naskel.com
+
+// KeyHash golden types (RTPS 2.5 9.6.4.8). Each type is named by the vector
+// it pins; the expected values are in tests/key_hash_*.rs.
+module P {
+  @final struct LongKey { @key long id; long x; };
+  @final struct SpecEx2 { @key string<12> label; @key long long id; long x; long y; };
+  @mutable struct Nested { @key long m_long; long u; long w; };
+  @mutable struct SpecEx3 { @id(40) @key string<12> label; @id(30) @key Nested m_nested; @id(20) long x; @id(10) long y; };
+  @final struct StrKey { @key string label; long x; };
+  @final struct StrKey8 { @key string<8> label; long x; };
+  @final struct Str11 { @key string<11> label; long x; };
+  @final struct Str12 { @key string<12> label; long x; };
+  @appendable struct ShapeType { @key string<128> color; long x; long y; long shapesize; };
+  @final struct TwoKey { @key long a; @key short b; long x; };
+  @mutable struct TwoKeyId { @id(2) @key long a; @id(1) @key short b; @id(3) long x; };
+  @final struct Inner { @key long k; long u; };
+  @final struct Outer { @key Inner in_; @key octet tag; long x; };
+  @final struct Inner2 { long a; long b; };
+  @final struct OuterNoKey { @key Inner2 p; long x; };
+  @final struct AlignKey { @key octet t; @key long long v; };
+  @final struct Key16 { @key long long a; @key long long b; };
+  @final struct CapKey { @key octet t; @key long long v; @key long c; };
+  @mutable struct InnerM { long a; long b; };
+  @final struct OuterM { @key InnerM p; };
+  @final struct BigKey { @key long long a; @key long long b; @key long c; };
+};

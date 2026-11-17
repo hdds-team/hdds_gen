@@ -1,0 +1,72 @@
+// Every construct a user's crate may compile under `clippy -D warnings`:
+// optionals in each extensibility, strings behind references (sequence,
+// array, map, union, optional), enums of each width, unions, bitsets,
+// bitmasks, keyed structs, externals and aliases.
+module surface {
+    @bit_bound(8) enum Small { S_A, S_B, S_C };
+    @bit_bound(16) enum Medium { M_A, M_B };
+    enum Wide { W_A, W_B, W_C };
+    @bit_bound(16) bitmask Flags { F0, F1, F2 };
+    bitset Bits { bitfield<3> low; bitfield<5> high; };
+    typedef sequence<string> Names;
+    typedef long Ids[4];
+
+    @final struct OptFinal {
+        long id;
+        @optional string name;
+        @optional double value;
+        @optional sequence<long> data;
+        @optional Small kind;
+    };
+    @appendable struct OptAppendable {
+        long id;
+        @optional string name;
+        @optional sequence<string> tags;
+        @optional Wide w;
+    };
+    @mutable struct OptMutable {
+        long id;
+        @optional string name;
+        @optional double value;
+    };
+
+    @final struct Strings {
+        string name;
+        string<8> short_name;
+        wstring wide_name;
+        sequence<string> list;
+        string table[3];
+        string grid[2][2];
+        map<string, string> dict;
+        map<long, string> by_id;
+        Names names;
+    };
+    @final struct Octets { sequence<octet> blob; octet raw16[16]; octet grid[2][3]; };
+    @final struct Enums { Small a; Medium b; Wide c; sequence<Small> v; Wide arr[2]; };
+    @mutable struct MutEnums { Small a; Medium b; Wide c; };
+    @appendable struct AppEnums { Small a; Medium b; Wide c; };
+
+    union ByWide switch (Wide) {
+        case W_A: long i;
+        case W_B: double d;
+        case W_C: string s;
+    };
+    union ByLong switch (long) {
+        case 1: long i;
+        case 2: string s;
+        case 3: sequence<string> list;
+        case 4: octet blob[4];
+        default: short other;
+    };
+    @mutable union MutUnion switch (long) { case 1: long i; case 2: string s; };
+    union BySmall switch (Small) { case S_A: long a; case S_B: string b; };
+    union ByBool switch (boolean) { case TRUE: long t; case FALSE: string f; };
+    @final struct HoldsUnions { ByWide w; ByLong l; MutUnion m; BySmall s; ByBool b; };
+
+    @final struct Keyed { @key long id; @key string name; double value; Flags flags; Bits bits; };
+    @appendable struct KeyedApp { @key long id; string name; sequence<Keyed> kids; };
+    @mutable struct KeyedMut { @key long id; @optional string note; Ids ids; };
+    @final struct Boxed { @external string name; @external long n; @optional @external string note; @external sequence<octet> raw; @external long grid[2]; };
+    @final struct Base { long id; string label; };
+    @final struct Derived : Base { @optional string extra; Keyed k; };
+};

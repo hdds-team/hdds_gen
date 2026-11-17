@@ -30,6 +30,12 @@ pub enum IdlType {
 
     /// Array type with fixed size
     Array { inner: Box<Self>, size: u32 },
+
+    /// `string<N>` (`wide`: `wstring<N>`). Unbounded strings are
+    /// `Primitive(String)` / `Primitive(WString)`; `sequence<char, N>` is a
+    /// `Sequence` of `char`, a different type on the wire (DDS-XTypes 1.3
+    /// 7.4.3.5.3 rules 3-4 versus 11).
+    BoundedString { wide: bool, bound: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +150,9 @@ impl IdlType {
         match self {
             Self::Primitive(p) => p.to_idl_string().to_string(),
             Self::Named(name) => name.clone(),
+            Self::BoundedString { wide, bound } => {
+                format!("{}<{bound}>", if *wide { "wstring" } else { "string" })
+            }
             Self::Sequence { inner, bound } => bound.as_ref().map_or_else(
                 || format!("sequence<{}>", inner.to_idl_string()),
                 |b| format!("sequence<{}, {}>", inner.to_idl_string(), b),
@@ -182,8 +191,8 @@ pub enum Annotation {
     /// @position - explicitly sets field position
     Position(u32),
 
-    /// @value - sets default value
-    Value(String),
+    /// @default(value) - sets the default value, with its literal kind
+    Value(AnnotationParam),
 
     /// @extensibility - controls type evolution
     Extensibility(ExtensibilityKind),
@@ -207,13 +216,16 @@ pub enum Annotation {
     Default,
 
     /// @range - specify value range
-    Range { min: String, max: String },
+    Range {
+        min: AnnotationParam,
+        max: AnnotationParam,
+    },
 
     /// @min - minimum value
-    Min(String),
+    Min(AnnotationParam),
 
     /// @max - maximum value
-    Max(String),
+    Max(AnnotationParam),
 
     /// @unit - specify unit of measurement
     Unit(String),
@@ -249,14 +261,128 @@ pub enum Annotation {
     /// @ami - asynchronous method invocation
     Ami,
 
-    /// @topic - marks a struct as a DDS topic type
-    Topic,
+    /// @topic - marks a struct as a DDS topic type; `@topic(name="X",
+    /// platform="Y")` (IDL 4.2 8.3.5.1) names the topic and the platform
+    /// it applies to.
+    Topic {
+        name: Option<String>,
+        platform: Option<String>,
+    },
 
     /// Custom/unknown annotation
     Custom {
         name: String,
-        params: Vec<(String, String)>,
+        params: Vec<AnnotationParam>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Lexical kind of an annotation parameter value, kept so the value can be
+/// written back as the same IDL literal (`"x y"` stays a string, `RED` an
+/// identifier, `-3` a number).
+pub enum AnnotationParamKind {
+    /// A (possibly scoped) name: `RED`, `Color::RED`.
+    Identifier,
+    /// A string literal; `value` holds the unescaped text, without quotes.
+    String,
+    /// An integer or floating-point literal, sign included.
+    Number,
+    /// `TRUE` / `FALSE`; `value` is `true` or `false`.
+    Bool,
+    /// A character literal; `value` holds the character, unescaped.
+    Char,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One parameter of a custom annotation: `name = value`, or a positional
+/// `value` (empty `name`).
+pub struct AnnotationParam {
+    /// Parameter name; empty for a positional parameter.
+    pub name: String,
+    /// Literal value: unquoted and unescaped for a string.
+    pub value: String,
+    /// Lexical kind of `value`.
+    pub kind: AnnotationParamKind,
+}
+
+impl std::fmt::Display for AnnotationParam {
+    /// The value as read (unquoted for a string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
+impl AnnotationParam {
+    /// Builds a parameter.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        value: impl Into<String>,
+        kind: AnnotationParamKind,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            kind,
+        }
+    }
+
+    /// The value written as an IDL literal: a string is quoted and escaped,
+    /// anything else is written as is.
+    #[must_use]
+    pub fn value_to_idl(&self) -> String {
+        match self.kind {
+            AnnotationParamKind::String => quote_idl_string(&self.value),
+            AnnotationParamKind::Char => quote_idl_char(&self.value),
+            AnnotationParamKind::Bool => {
+                if self.value.eq_ignore_ascii_case("true") {
+                    "TRUE".to_string()
+                } else {
+                    "FALSE".to_string()
+                }
+            }
+            AnnotationParamKind::Identifier | AnnotationParamKind::Number => self.value.clone(),
+        }
+    }
+}
+
+/// `value` (one character) as an IDL character literal, escaped as the
+/// lexer reads it back.
+#[must_use]
+pub fn quote_idl_char(value: &str) -> String {
+    let mut out = String::from("'");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// `value` as an IDL string literal: quoted, with `\\`, `\"`, newline,
+/// tab and carriage return escaped (the escapes the lexer reads back).
+#[must_use]
+pub fn quote_idl_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

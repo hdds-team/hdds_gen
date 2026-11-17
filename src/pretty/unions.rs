@@ -5,7 +5,10 @@
 //!
 //! Renders IDL discriminated union definitions back to source format.
 
-use super::helpers::{indent, push_fmt, render_annotation, split_array, type_to_idl};
+use super::helpers::{
+    ident, indent, push_fmt, render_annotation, render_annotations_line, scoped, split_array,
+    type_to_idl,
+};
 use crate::ast::{Union, UnionCase, UnionLabel};
 use crate::types::Annotation;
 use std::fmt::Write;
@@ -17,12 +20,18 @@ pub(super) fn push_union(out: &mut String, u: &Union, level: usize) {
             format_args!("{}{}\n", indent(level), render_annotation(ann)),
         );
     }
+    let mut disc_annotations = String::new();
+    for ann in &u.discriminator_annotations {
+        disc_annotations.push_str(&render_annotation(ann));
+        disc_annotations.push(' ');
+    }
     push_fmt(
         out,
         format_args!(
-            "{}union {} switch({}) {{\n",
+            "{}union {} switch({}{}) {{\n",
             indent(level),
-            u.name,
+            ident(&u.name),
+            disc_annotations,
             type_to_idl(&u.discriminator)
         ),
     );
@@ -39,6 +48,7 @@ fn push_union_case(out: &mut String, case: &UnionCase, level: usize) {
     for lbl in &case.labels {
         match lbl {
             UnionLabel::Value(v) => {
+                let v = label_to_idl(v);
                 if first {
                     push_fmt(out, format_args!("{}case {v}: ", indent(level)));
                     first = false;
@@ -72,13 +82,33 @@ pub(super) fn push_union_case_field(out: &mut String, case: &UnionCase, level: u
     }
 
     let (base, dims) = split_array(&case.field.field_type);
-    let mut name_with_dims = case.field.name.clone();
+    let mut name_with_dims = ident(&case.field.name);
     for d in dims {
         let _ = write!(&mut name_with_dims, "[{d}]");
     }
 
+    let annotations = render_annotations_line(&case.field.annotations);
+    let sep = if annotations.is_empty() { "" } else { " " };
     push_fmt(
         out,
-        format_args!("{} {};\n", type_to_idl(base), name_with_dims),
+        format_args!(
+            "{annotations}{sep}{} {};\n",
+            type_to_idl(base),
+            name_with_dims
+        ),
     );
+}
+
+/// A case label: a (scoped) enumerator or constant name is escaped like any
+/// identifier; a number, a character and `TRUE` / `FALSE` are written as is.
+fn label_to_idl(v: &str) -> String {
+    let named = v.starts_with("::")
+        || v.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if named && v != "TRUE" && v != "FALSE" {
+        scoped(v)
+    } else {
+        v.to_string()
+    }
 }

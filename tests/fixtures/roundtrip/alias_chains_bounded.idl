@@ -1,0 +1,19 @@
+// The alias chains of alias_chains.idl in the bounded form the micro and
+// c-micro backends take (bounded sequences, no map, no optional).
+module A {
+    struct P { long v; };
+    enum Kind { K_ONE, K_TWO };
+    typedef sequence<P, 4> PList;
+    typedef P PArr[2];
+    typedef string<16> Name;
+    typedef Kind KindAlias;
+    module Inner { struct Q { @key long id; A::Name label; }; typedef sequence<Q, 4> QList; };
+};
+module C { typedef A::PList PList2; typedef A::Inner::QList QList2; typedef A::KindAlias KindAlias2; };
+module B {
+    @mutable struct M { A::PList items; A::PArr pair; C::PList2 chained; C::QList2 qs; A::Kind kind; C::KindAlias2 kind2; };
+    @final struct F { A::PList items; A::PArr pair; C::QList2 qs; A::Name name; };
+    @appendable struct K { @key A::Inner::Q q; @key A::Name name; @key C::KindAlias2 kind; A::PList items; };
+    union U switch (C::KindAlias2) { case A::K_ONE: A::PList items; case A::K_TWO: C::QList2 qs; };
+    struct HoldsUnions { @key long id; U u; };
+};

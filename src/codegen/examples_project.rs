@@ -13,9 +13,25 @@
 #![allow(clippy::format_push_string)]
 
 use crate::ast::{Definition, IdlFile, Struct};
+use crate::codegen::keywords::rust_ident;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
+
+/// Crate name for a generated project, derived from the IDL file name.
+///
+/// `to_snake_case` alone can yield a Rust keyword (`mod.idl`, `type.idl`), and a
+/// crate whose library target is a keyword cannot be named in a `use` statement.
+/// Such a name gets a `_types` suffix so the Cargo manifest and the generated
+/// `use` agree.
+fn crate_ident(base_name: &str) -> String {
+    let snake = to_snake_case(base_name);
+    if rust_ident(&snake) == snake {
+        snake
+    } else {
+        format!("{snake}_types")
+    }
+}
 
 /// Build system choice for project generation
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -210,17 +226,38 @@ fn generate_cpp_publisher(
 #include <hdds.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+
+// How long to wait for a subscriber to match before giving up.
+constexpr std::chrono::seconds kDiscoveryTimeout{{30}};
 
 int main(int argc, char* argv[]) {{
     try {{
         hdds::logging::init(hdds::LogLevel::Warn);
 
-        hdds::Participant participant("{struct_name}Example");
+        // The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+        // (0..232), else 0. A malformed value makes the constructor throw.
+        hdds::Participant participant("{struct_name}Example", hdds::TransportMode::UdpMulticast);
+        const std::uint32_t domain_id = participant.domain_id();
+        std::cout << "[HDDS] Domain " << domain_id << " | Ready" << std::endl;
 
         auto writer = participant.create_writer<{full_type}>("{struct_name}Topic");
+
+        // A sample written before discovery completes is never delivered.
+        auto deadline = std::chrono::steady_clock::now() + kDiscoveryTimeout;
+        while (writer.get_publication_matched_status().current_count == 0) {{
+            if (std::chrono::steady_clock::now() >= deadline) {{
+                std::cerr << "[PUB] No subscriber matched on domain " << domain_id
+                          << " within " << kDiscoveryTimeout.count()
+                          << " s; start the subscriber first" << std::endl;
+                return 1;
+            }}
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }}
+        std::cout << "[PUB] Subscriber matched" << std::endl;
 
         int sample_count = 10;
         if (argc > 1) {{
@@ -267,18 +304,25 @@ fn generate_cpp_subscriber(
 #include <hdds.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 
 using namespace std::chrono_literals;
 
+// Exit when no sample has arrived for this long.
+constexpr std::chrono::seconds kIdleTimeout{{30}};
+
 int main(int argc, char* argv[]) {{
     try {{
         hdds::logging::init(hdds::LogLevel::Warn);
 
-        hdds::Participant participant("{struct_name}Example");
+        // The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+        // (0..232), else 0. A malformed value makes the constructor throw.
+        hdds::Participant participant("{struct_name}Example", hdds::TransportMode::UdpMulticast);
+        const std::uint32_t domain_id = participant.domain_id();
 
-        std::cout << "[HDDS] UDP multicast | Ready" << std::endl;
+        std::cout << "[HDDS] Domain " << domain_id << " | UDP multicast | Ready" << std::endl;
 
         auto reader = participant.create_reader<{full_type}>("{struct_name}Topic");
 
@@ -291,14 +335,22 @@ int main(int argc, char* argv[]) {{
         }}
 
         int received = 0;
+        auto last_sample = std::chrono::steady_clock::now();
         while (received < sample_count) {{
-            if (waitset.wait(5s)) {{
+            if (waitset.wait(1s)) {{
                 while (auto msg = reader.take()) {{
                     ++received;
+                    last_sample = std::chrono::steady_clock::now();
                     std::cout << "[SUB] Received: {struct_name} {{ "{field_print_sub} << " }}" << std::endl;
                 }}
             }}
+            if (std::chrono::steady_clock::now() - last_sample >= kIdleTimeout) {{
+                std::cout << "[SUB] No sample for " << kIdleTimeout.count() << " s, giving up" << std::endl;
+                break;
+            }}
         }}
+
+        std::cout << "[SUB] Received " << received << "/" << sample_count << " samples" << std::endl;
 
     }} catch (const hdds::Error& e) {{
         std::cerr << "HDDS Error: " << e.what() << std::endl;
@@ -442,7 +494,7 @@ pub fn generate_rust_project(
 ) -> GeneratedProject {
     let mut project = GeneratedProject::new();
     let base_name = idl_basename(idl_path);
-    let crate_name = to_snake_case(&base_name);
+    let crate_name = crate_ident(&base_name);
 
     // Find first struct for examples
     let (first_struct, module_path) = find_first_struct_with_path(&ast.definitions, Vec::new())
@@ -461,11 +513,15 @@ pub fn generate_rust_project(
     let full_type = if module_path.is_empty() {
         struct_name.clone()
     } else {
+        // The Rust backend emits `pub mod <IdlName>` verbatim (under
+        // allow(non_snake_case)), so the path a generated example imports must use
+        // the IDL spelling too. Snake-casing it here produced `use crate::demo::T`
+        // against a `pub mod Demo` and the project did not compile.
         format!(
             "{}::{}",
             module_path
                 .iter()
-                .map(|s| to_snake_case(s))
+                .map(|s| rust_ident(s).into_owned())
                 .collect::<Vec<_>>()
                 .join("::"),
             struct_name
@@ -505,9 +561,15 @@ fn generate_rust_cargo_toml(
     hdds_path: Option<&std::path::Path>,
 ) -> String {
     let hdds_dep = hdds_path.map_or_else(
-        || r#"hdds = "0.8""#.to_string(),
+        || {
+            format!(
+                r#"hdds = "{}""#,
+                crate::codegen::rust_backend::compat_guard::REQUIRED_HDDS_VERSION
+            )
+        },
         |path| {
-            let display_path = path.display();
+            let resolved = resolve_local_crate_path(path, "hdds");
+            let display_path = resolved.display();
             format!(r#"hdds = {{ path = "{display_path}" }}"#)
         },
     );
@@ -553,16 +615,37 @@ fn generate_rust_publisher(
 
 use {crate_name}::{full_type};
 use hdds::{{Participant, QoS, TransportMode}};
-use std::{{thread, time::Duration}};
+use std::{{thread, time::{{Duration, Instant}}}};
+
+/// How long to wait for a subscriber to match before giving up.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> hdds::Result<()> {{
+    // The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+    // (0..=232), else 0. A malformed value makes build() return an error.
     let participant = Participant::builder("{struct_name}Example")
         .with_transport(TransportMode::UdpMulticast)
         .build()?;
+    let domain_id = participant.domain_id();
+    println!("[HDDS] Domain {{}} | UDP multicast | Ready", domain_id);
 
     let qos = QoS::reliable().keep_last(10);
     let topic = participant.topic::<{struct_name}>("{struct_name}Topic")?;
     let writer = topic.writer().qos(qos).build()?;
+
+    // A sample written before discovery completes is never delivered.
+    let deadline = Instant::now() + DISCOVERY_TIMEOUT;
+    while writer.matched_reader_count() == 0 {{
+        if Instant::now() >= deadline {{
+            eprintln!(
+                "[PUB] No subscriber matched on domain {{}} within {{:?}}; start the subscriber first",
+                domain_id, DISCOVERY_TIMEOUT
+            );
+            std::process::exit(1);
+        }}
+        thread::sleep(Duration::from_millis(50));
+    }}
+    println!("[PUB] Subscriber matched");
 
     let sample_count: i32 = std::env::args()
         .nth(1)
@@ -596,15 +679,20 @@ fn generate_rust_subscriber(crate_name: &str, full_type: &str, struct_name: &str
 
 use {crate_name}::{full_type};
 use hdds::{{Participant, QoS, TransportMode}};
-use std::{{thread, time::Duration}};
+use std::{{thread, time::{{Duration, Instant}}}};
+
+/// Exit when no sample has arrived for this long.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> hdds::Result<()> {{
+    // The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+    // (0..=232), else 0. A malformed value makes build() return an error.
     let participant = Participant::builder("{struct_name}Example")
         .with_transport(TransportMode::UdpMulticast)
         .build()?;
+    let domain_id = participant.domain_id();
 
-    println!("[HDDS] Domain {{}} | UDP multicast | Ready",
-        participant.domain_id());
+    println!("[HDDS] Domain {{}} | UDP multicast | Ready", domain_id);
 
     let qos = QoS::reliable().keep_last(10);
     let topic = participant.topic::<{struct_name}>("{struct_name}Topic")?;
@@ -616,14 +704,21 @@ fn main() -> hdds::Result<()> {{
         .unwrap_or(10);
 
     let mut received = 0;
+    let mut last_sample = Instant::now();
     while received < sample_count {{
         if let Some(msg) = reader.take()? {{
             received += 1;
+            last_sample = Instant::now();
             println!("[SUB] Received: {{:?}}", msg);
+        }} else if last_sample.elapsed() >= IDLE_TIMEOUT {{
+            println!("[SUB] No sample for {{:?}}, giving up", IDLE_TIMEOUT);
+            break;
+        }} else {{
+            thread::sleep(Duration::from_millis(100));
         }}
-        thread::sleep(Duration::from_millis(100));
     }}
 
+    println!("[SUB] Received {{}}/{{}} samples", received, sample_count);
     Ok(())
 }}
 "#,
@@ -644,6 +739,7 @@ fn generate_rust_field_inits(s: &Struct) -> String {
             convert_default_to_rust(default_val, &f.field_type)
         } else {
             match &f.field_type {
+                IdlType::BoundedString { .. } => "\"hello\".to_string()".to_string(),
                 IdlType::Primitive(p) => match p {
                     PrimitiveType::Boolean => "false".to_string(),
                     PrimitiveType::Char | PrimitiveType::WChar => "'A'".to_string(),
@@ -731,7 +827,7 @@ pub fn generate_c_project(
     let base_lower = to_snake_case(&base_name);
 
     // Find first struct for examples
-    let (first_struct, _) = find_first_struct_with_path(&ast.definitions, Vec::new())
+    let (first_struct, module_path) = find_first_struct_with_path(&ast.definitions, Vec::new())
         .unwrap_or_else(|| {
             static DUMMY: LazyLock<Struct> = LazyLock::new(|| Struct {
                 name: "Message".to_string(),
@@ -743,8 +839,14 @@ pub fn generate_c_project(
             (&*DUMMY, vec![])
         });
 
-    let struct_name = &first_struct.name;
-    // Use lowercase without underscores to match C backend naming convention
+    // The C backend names a type with its module path (`m_T`) and its
+    // functions with that name lowercased (`m_t_encode_cdr2_le`).
+    let c_name = if module_path.is_empty() {
+        first_struct.name.clone()
+    } else {
+        format!("{}_{}", module_path.join("_"), first_struct.name)
+    };
+    let struct_name = &c_name;
     let func_prefix = to_c_ident(struct_name);
 
     // 1. Header file (types)
@@ -805,14 +907,18 @@ fn generate_c_publisher(
 #define sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
-int main(int argc, char* argv[]) {{
-    printf("Starting {struct_name} Publisher...\n");
+/* How long to wait for a subscriber to match before giving up. */
+#define EXAMPLE_DISCOVERY_TIMEOUT_MS 30000u
 
+int main(int argc, char* argv[]) {{
+    /* The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid (0..232), else 0. */
     struct HddsParticipant* participant = hdds_participant_create("{struct_name}Example");
     if (!participant) {{
-        fprintf(stderr, "Failed to create participant\n");
+        fprintf(stderr, "Failed to create participant (HDDS_DOMAIN_ID: unset or empty is 0, else decimal 0..232)\n");
         return 1;
     }}
+    unsigned domain_id = hdds_participant_domain_id(participant);
+    printf("Starting {struct_name} Publisher (domain %u)...\n", domain_id);
 
     struct HddsDataWriter* writer = hdds_writer_create(participant, "{struct_name}Topic");
     if (!writer) {{
@@ -820,6 +926,16 @@ int main(int argc, char* argv[]) {{
         hdds_participant_destroy(participant);
         return 1;
     }}
+
+    /* A sample written before discovery completes is never delivered. */
+    if (hdds_writer_wait_for_matched_readers(writer, 1, EXAMPLE_DISCOVERY_TIMEOUT_MS) != HDDS_OK) {{
+        fprintf(stderr, "No subscriber matched on domain %u within %u s; start the subscriber first\n",
+                domain_id, EXAMPLE_DISCOVERY_TIMEOUT_MS / 1000u);
+        hdds_writer_destroy(writer);
+        hdds_participant_destroy(participant);
+        return 1;
+    }}
+    printf("Subscriber matched.\n");
 
     int sample_count = 10;
     if (argc > 1) {{
@@ -881,15 +997,19 @@ fn generate_c_subscriber(header_name: &str, struct_name: &str, func_prefix: &str
 #define sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
-int main(int argc, char* argv[]) {{
-    printf("Starting {struct_name} Subscriber...\n");
-    printf("(Start this BEFORE the publisher)\n");
+/* Exit when no sample has arrived for this long. */
+#define EXAMPLE_IDLE_TIMEOUT_MS 30000u
 
+int main(int argc, char* argv[]) {{
+    /* The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid (0..232), else 0. */
     struct HddsParticipant* participant = hdds_participant_create("{struct_name}Example");
     if (!participant) {{
-        fprintf(stderr, "Failed to create participant\n");
+        fprintf(stderr, "Failed to create participant (HDDS_DOMAIN_ID: unset or empty is 0, else decimal 0..232)\n");
         return 1;
     }}
+    unsigned domain_id = hdds_participant_domain_id(participant);
+    printf("Starting {struct_name} Subscriber (domain %u)...\n", domain_id);
+    printf("(Start this BEFORE the publisher)\n");
 
     struct HddsDataReader* reader = hdds_reader_create(participant, "{struct_name}Topic");
     if (!reader) {{
@@ -899,7 +1019,8 @@ int main(int argc, char* argv[]) {{
     }}
 
     struct HddsWaitSet* waitset = hdds_waitset_create();
-    hdds_waitset_attach(waitset, hdds_reader_status_condition(reader));
+    const struct HddsStatusCondition* cond = hdds_reader_get_status_condition(reader);
+    hdds_waitset_attach_status_condition(waitset, cond);
 
     int sample_count = 10;
     if (argc > 1) {{
@@ -909,26 +1030,39 @@ int main(int argc, char* argv[]) {{
     printf("Waiting for %d samples...\n", sample_count);
 
     int received = 0;
-    while (received < sample_count) {{
-        if (hdds_waitset_wait(waitset, 5000) > 0) {{
+    unsigned idle_ms = 0;
+    while (received < sample_count && idle_ms < EXAMPLE_IDLE_TIMEOUT_MS) {{
+        const void* triggered[1];
+        size_t triggered_count = 0;
+        if (hdds_waitset_wait(waitset, 1000000000LL, triggered, 1, &triggered_count) == HDDS_OK
+            && triggered_count > 0) {{
             uint8_t buffer[4096];
             size_t len;
-            while (hdds_reader_take(reader, buffer, sizeof(buffer), &len) == 0) {{
+            idle_ms = 0;
+            while (hdds_reader_take(reader, buffer, sizeof(buffer), &len) == HDDS_OK) {{
                 {struct_name} msg;
                 memset(&msg, 0, sizeof(msg));
-                if ({func_prefix}_decode_cdr2_le(&msg, buffer, len) >= 0) {{
+                /* Strings and sequences are placed in this arena. */
+                uint8_t storage[4096];
+                hdds_x2c_arena arena;
+                hdds_x2c_arena_init(&arena, storage, sizeof(storage));
+                if ({func_prefix}_decode_cdr2_le_alloc(&msg, buffer, len, hdds_x2c_arena_alloc, &arena) >= 0) {{
                     printf("[RECV] Sample %d/%d\n", ++received, sample_count);
                 }}
             }}
         }} else {{
-            printf("(timeout -- no data)\n");
+            idle_ms += 1000;
         }}
+    }}
+
+    if (received < sample_count) {{
+        printf("No sample for %u s, giving up.\n", EXAMPLE_IDLE_TIMEOUT_MS / 1000u);
     }}
 
     hdds_waitset_destroy(waitset);
     hdds_reader_destroy(reader);
     hdds_participant_destroy(participant);
-    printf("Subscriber finished. Received %d samples.\n", received);
+    printf("Subscriber finished. Received %d/%d samples.\n", received, sample_count);
     return 0;
 }}
 "#,
@@ -939,23 +1073,32 @@ int main(int argc, char* argv[]) {{
 }
 
 fn generate_c_makefile(base_name: &str) -> String {
+    // The generated project must BUILD as generated. An earlier version gave neither an
+    // include path for hdds.h nor a library (its hint named `-lhdds`, while the C library
+    // is `hdds_c`), so `make` stopped on "hdds.h: No such file or directory". This mirrors
+    // the Makefile of the documented C tutorial, so the generated project and the
+    // documented one agree.
     format!(
         r"# Generated by hddsgen --example
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -O2 -std=c11
+# Path to your HDDS checkout: override it if this project does not sit next to it,
+#   make HDDS=/path/to/hdds
+# and build the C library there first:
+#   cargo build --release -p hdds-c
+HDDS ?= ../hdds
 
-# Optional: Link with hdds
-# LDFLAGS += -lhdds
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -O2 -std=c11 -I$(HDDS)/sdk/c/include
+LDLIBS ?= $(HDDS)/target/release/libhdds_c.a -lpthread -ldl -lm
 
 .PHONY: all clean
 
 all: publisher subscriber
 
 publisher: publisher.c {base_name}.h
-	$(CC) $(CFLAGS) -o $@ publisher.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ publisher.c $(LDLIBS)
 
 subscriber: subscriber.c {base_name}.h
-	$(CC) $(CFLAGS) -o $@ subscriber.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ subscriber.c $(LDLIBS)
 
 clean:
 	rm -f publisher subscriber
@@ -1094,112 +1237,129 @@ fn generate_python_publisher(
     s: &Struct,
 ) -> String {
     let field_kwargs = generate_python_field_kwargs(s);
+    // `from m import A.B` is not Python: import the first segment, use the full path.
+    let import_head = import_path.split('.').next().unwrap_or(import_path);
     format!(
         r#"#!/usr/bin/env python3
 # Generated by hddsgen --example
-# Example DDS Publisher
+# DDS Publisher using the HDDS Python SDK
 
 import sys
 import time
 
-from {module_name} import {import_path}
+import hdds
+from {module_name} import {import_head}
 
-# Uncomment when hdds Python bindings are available:
-# import hdds
+# How long to wait for a subscriber to match before giving up.
+DISCOVERY_TIMEOUT_S = 30.0
 
 def main():
-    print(f"Starting {struct_name} Publisher...")
+    # The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+    # (0..232), else 0. A malformed value makes the constructor raise.
+    with hdds.Participant("{struct_name}Example") as participant:
+        domain_id = participant.domain_id
+        print(f"[HDDS] Domain {{domain_id}} | UDP multicast | Ready")
 
-    # Uncomment to enable DDS transport:
-    # participant = hdds.Participant("{struct_name}_pub", domain_id=0)
-    # publisher = participant.create_publisher()
-    # writer = publisher.create_writer("{struct_name}Topic")
+        qos = hdds.QoS.reliable().history_depth(10)
+        writer = participant.create_writer(
+            "{struct_name}Topic",
+            {import_path},
+            qos=qos,
+            type_name={import_path}.type_name(),
+        )
 
-    sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+        # A sample written before discovery completes is never delivered.
+        if not writer.wait_for_readers(1, timeout=DISCOVERY_TIMEOUT_S):
+            print(
+                f"[PUB] No subscriber matched on domain {{domain_id}} within "
+                f"{{DISCOVERY_TIMEOUT_S:.0f}} s; start the subscriber first",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("[PUB] Subscriber matched")
 
-    for i in range(sample_count):
-        # Create message
-        msg = {import_path}({field_kwargs})
+        sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 
-        # Serialize to CDR2
-        encoded = msg.encode_cdr2_le()
-        print(f"[SEND] Sample {{i + 1}}/{{sample_count}} ({{len(encoded)}} bytes)")
-
-        # Uncomment to publish via DDS:
-        # writer.write(encoded)
-
-        time.sleep(1)
-
-    print("Publisher finished.")
+        for i in range(sample_count):
+            msg = {import_path}({field_kwargs})
+            writer.write_typed(msg)
+            print(f"[PUB] {{msg}}")
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
 "#,
         module_name = module_name,
         import_path = import_path,
+        import_head = import_head,
         struct_name = struct_name,
         field_kwargs = field_kwargs,
     )
 }
 
 fn generate_python_subscriber(module_name: &str, import_path: &str, struct_name: &str) -> String {
+    let import_head = import_path.split('.').next().unwrap_or(import_path);
     format!(
         r#"#!/usr/bin/env python3
 # Generated by hddsgen --example
-# Example DDS Subscriber
+# DDS Subscriber using the HDDS Python SDK
 
 import sys
 import time
 
-from {module_name} import {import_path}
+import hdds
+from {module_name} import {import_head}
 
-# Uncomment when hdds Python bindings are available:
-# import hdds
+# Exit when no sample has arrived for this long.
+IDLE_TIMEOUT_S = 30.0
 
 def main():
-    print(f"Starting {struct_name} Subscriber...")
+    # The SDK applies the domain rule: HDDS_DOMAIN_ID when set and valid
+    # (0..232), else 0. A malformed value makes the constructor raise.
+    with hdds.Participant("{struct_name}Example") as participant:
+        domain_id = participant.domain_id
+        print(f"[HDDS] Domain {{domain_id}} | UDP multicast | Ready")
 
-    # Uncomment to enable DDS transport:
-    # participant = hdds.Participant("{struct_name}_sub", domain_id=0)
-    # subscriber = participant.create_subscriber()
-    # reader = subscriber.create_reader("{struct_name}Topic")
+        qos = hdds.QoS.reliable().history_depth(10)
+        reader = participant.create_reader(
+            "{struct_name}Topic",
+            qos=qos,
+            type_name={import_path}.type_name(),
+            msg_type={import_path},
+        )
 
-    sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    print(f"Waiting for {{sample_count}} samples...")
+        sample_count = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 
-    received = 0
-    ticks = 0
+        received = 0
+        last_sample = time.monotonic()
+        while received < sample_count:
+            msg = reader.take_typed({import_path})
+            if msg is not None:
+                received += 1
+                last_sample = time.monotonic()
+                print(f"[SUB] Received: {{msg}}")
+            elif time.monotonic() - last_sample >= IDLE_TIMEOUT_S:
+                print(f"[SUB] No sample for {{IDLE_TIMEOUT_S:.0f}} s, giving up")
+                break
+            else:
+                time.sleep(0.01)
 
-    while received < sample_count:
-        # Uncomment to read via DDS:
-        # data = reader.take()
-        # if data:
-        #     msg = {import_path}.decode_cdr2_le(data)
-        #     print(f"[RECV] Sample {{received + 1}}")
-        #     received += 1
-
-        time.sleep(0.1)
-
-        # Timeout after 30 seconds
-        ticks += 1
-        if ticks > 300:
-            print("Timeout - no data received")
-            break
-
-    print(f"Subscriber finished. Received {{received}} samples.")
+        print(f"[SUB] Received {{received}}/{{sample_count}} samples")
 
 if __name__ == "__main__":
     main()
 "#,
         module_name = module_name,
         import_path = import_path,
+        import_head = import_head,
         struct_name = struct_name,
     )
 }
 
 fn generate_python_requirements() -> String {
     r"# Generated by hddsgen --example
-# hdds-py  # Uncomment when hdds Python bindings are available
+# The HDDS Python SDK is not on PyPI: build its wheel from sdk/python, and set
+# HDDS_LIB_PATH to a directory holding libhdds_c.so.
 "
     .to_string()
 }
@@ -1210,6 +1370,7 @@ fn generate_python_field_kwargs(s: &Struct) -> String {
     let mut kwargs = Vec::new();
     for f in &s.fields {
         let init = match &f.field_type {
+            IdlType::BoundedString { .. } => "\"hello\"".to_string(),
             IdlType::Primitive(p) => match p {
                 PrimitiveType::Boolean => "False".to_string(),
                 PrimitiveType::Char | PrimitiveType::WChar => "\"A\"".to_string(),
@@ -1249,7 +1410,7 @@ pub fn generate_micro_project(
 ) -> GeneratedProject {
     let mut project = GeneratedProject::new();
     let base_name = idl_basename(idl_path);
-    let crate_name = to_snake_case(&base_name);
+    let crate_name = crate_ident(&base_name);
 
     // Find first struct for examples
     let (first_struct, module_path) = find_first_struct_with_path(&ast.definitions, Vec::new())
@@ -1268,11 +1429,15 @@ pub fn generate_micro_project(
     let full_type = if module_path.is_empty() {
         struct_name.clone()
     } else {
+        // The Rust backend emits `pub mod <IdlName>` verbatim (under
+        // allow(non_snake_case)), so the path a generated example imports must use
+        // the IDL spelling too. Snake-casing it here produced `use crate::demo::T`
+        // against a `pub mod Demo` and the project did not compile.
         format!(
             "{}::{}",
             module_path
                 .iter()
-                .map(|s| to_snake_case(s))
+                .map(|s| rust_ident(s).into_owned())
                 .collect::<Vec<_>>()
                 .join("::"),
             struct_name
@@ -1309,18 +1474,47 @@ pub fn generate_micro_project(
     project
 }
 
+/// Resolve the path a user gave for a local crate dependency.
+///
+/// `--hdds-path` accepts either the crate directory or the repository root. A
+/// repository root holds a virtual workspace manifest, which cargo cannot use as
+/// a dependency, so when `path` has no package manifest and `path/crates/<crate>`
+/// exists, that crate directory is used. Otherwise `path` is used unchanged.
+fn resolve_local_crate_path(path: &std::path::Path, crate_dir: &str) -> std::path::PathBuf {
+    let direct = path.join("Cargo.toml");
+    if direct.is_file() {
+        let is_virtual = std::fs::read_to_string(&direct)
+            .map(|s| !s.contains("[package]"))
+            .unwrap_or(false);
+        if !is_virtual {
+            return path.to_path_buf();
+        }
+    }
+    let nested = path.join("crates").join(crate_dir);
+    if nested.join("Cargo.toml").is_file() {
+        return nested;
+    }
+    path.to_path_buf()
+}
+
 fn generate_micro_cargo_toml(crate_name: &str, hdds_path: Option<&std::path::Path>) -> String {
     // Determine the hdds-micro dependency line
     let hdds_dep = hdds_path.map_or_else(
-        || r#"hdds-micro = { version = "0.8", features = ["std"] }"#.to_string(),
+        || {
+            format!(
+                r#"hdds-micro = {{ version = "{}", features = ["std", "heapless"] }}"#,
+                crate::codegen::rust_backend::compat_guard::REQUIRED_HDDS_MICRO_VERSION
+            )
+        },
         |path| {
-            let display_path = path.display();
-            format!(r#"hdds-micro = {{ path = "{display_path}", features = ["std"] }}"#)
+            let resolved = resolve_local_crate_path(path, "hdds-micro");
+            let display_path = resolved.display();
+            format!(r#"hdds-micro = {{ path = "{display_path}", features = ["std", "heapless"] }}"#)
         },
     );
 
     format!(
-        r#"# Generated by hddsgen --target micro --example
+        r#"# Generated by hddsgen gen micro --example
 [workspace]
 
 [package]
@@ -1362,7 +1556,7 @@ fn generate_micro_sender(
 ) -> String {
     let field_inits = generate_micro_field_inits(s);
     format!(
-        r#"// Generated by hddsgen --target micro --example
+        r#"// Generated by hddsgen gen micro --example
 // RTPS Sender using hdds-micro
 
 use std::net::UdpSocket;
@@ -1395,7 +1589,7 @@ fn main() {{
         .unwrap_or(10);
 
     for i in 0..sample_count {{
-        let msg = {full_type} {{
+        let msg = {struct_name} {{
 {field_inits}        }};
 
         // Build RTPS packet
@@ -1447,7 +1641,7 @@ fn main() {{
 
 fn generate_micro_receiver(crate_name: &str, full_type: &str, struct_name: &str) -> String {
     format!(
-        r#"// Generated by hddsgen --target micro --example
+        r#"// Generated by hddsgen gen micro --example
 // RTPS Receiver using hdds-micro
 
 use std::net::UdpSocket;
@@ -1507,7 +1701,7 @@ fn main() {{
                 }}
 
                 let mut dec = CdrDecoder::new(&buf[payload_start..len]);
-                match {full_type}::decode(&mut dec) {{
+                match {struct_name}::decode(&mut dec) {{
                     Ok(msg) => {{
                         received += 1;
                         println!("[RX] Sample {{}} from {{}}: {{}} bytes (RTPS seq={{}})",
@@ -1557,11 +1751,9 @@ fn generate_micro_readme(crate_name: &str, base_name: &str) -> String {
     format!(
         r"# {base_name} - no_std DDS Types
 
-Generated by `hdds_gen --target micro --example`
+Generated by `hddsgen gen micro --example`
 
-## Building for testing (std)
-
-Comment out `#![no_std]` in `src/lib.rs`, then:
+## Building
 
 ```bash
 cargo build --release
@@ -1597,15 +1789,15 @@ scp target/arm-unknown-linux-musleabihf/release/receiver pi@<pi-ip>:/tmp/
 
 ```
 {crate_name}/
-├── Cargo.toml
-├── .cargo/
-│   └── config.toml      # Cross-compilation settings
-├── src/
-│   ├── lib.rs           # Generated types (no_std compatible)
-│   └── bin/
-│       ├── sender.rs    # UDP sender example
-│       └── receiver.rs  # UDP receiver example
-└── README.md
+|-- Cargo.toml
+|-- .cargo/
+|   `-- config.toml      # Cross-compilation settings
+|-- src/
+|   |-- lib.rs           # Generated types (no_std compatible)
+|   `-- bin/
+|       |-- sender.rs    # UDP sender example
+|       `-- receiver.rs  # UDP receiver example
+`-- README.md
 ```
 ",
         base_name = base_name,
@@ -1616,25 +1808,12 @@ scp target/arm-unknown-linux-musleabihf/release/receiver pi@<pi-ip>:/tmp/
 fn generate_micro_field_inits(s: &Struct) -> String {
     use crate::types::{IdlType, PrimitiveType};
 
-    // Helper to check if type is bounded string (string<N> -> sequence<char, N>)
-    fn is_bounded_string(t: &IdlType) -> bool {
-        if let IdlType::Sequence {
-            inner,
-            bound: Some(_),
-        } = t
-        {
-            matches!(
-                **inner,
-                IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
-            )
-        } else {
-            false
-        }
-    }
-
     let mut inits = String::new();
     for f in &s.fields {
         let init = match &f.field_type {
+            IdlType::BoundedString { wide: false, .. } => {
+                "heapless::String::try_from(\"hello\").unwrap()".to_string()
+            }
             IdlType::Primitive(p) => match p {
                 PrimitiveType::Boolean => "false".to_string(),
                 PrimitiveType::Char | PrimitiveType::WChar => "'A'".to_string(),
@@ -1654,13 +1833,8 @@ fn generate_micro_field_inits(s: &Struct) -> String {
                 PrimitiveType::Void | PrimitiveType::Fixed { .. } => "0".to_string(),
             },
             IdlType::Named(n) => format!("{}::default()", n),
-            IdlType::Sequence { .. } => {
-                // Check for bounded string (string<N> -> heapless::String<N>)
-                if is_bounded_string(&f.field_type) {
-                    "heapless::String::try_from(\"hello\").unwrap()".to_string()
-                } else {
-                    "heapless::Vec::new()".to_string()
-                }
+            IdlType::BoundedString { wide: true, .. } | IdlType::Sequence { .. } => {
+                "heapless::Vec::new()".to_string()
             }
             IdlType::Array { size, .. } => format!("[Default::default(); {}]", size),
             IdlType::Map { .. } => "/* Map not supported in no_std */".to_string(),
@@ -1733,27 +1907,11 @@ const C_MICRO_CDR_HEADER: &str = include_str!("../../sdk/c-micro/include/hdds_mi
 fn generate_c_micro_sender(struct_name: &str, s: &Struct) -> String {
     use crate::types::{IdlType, PrimitiveType};
 
-    // Helper to check if type is bounded string (string<N> -> sequence<char, N>)
-    fn is_bounded_string_c(t: &IdlType) -> bool {
-        if let IdlType::Sequence {
-            inner,
-            bound: Some(_),
-        } = t
-        {
-            matches!(
-                **inner,
-                IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
-            )
-        } else {
-            false
-        }
-    }
-
     // Generate field initializers
     let mut field_inits = String::new();
     for f in &s.fields {
         // Check for bounded string first
-        if is_bounded_string_c(&f.field_type) {
+        if matches!(f.field_type, IdlType::BoundedString { wide: false, .. }) {
             field_inits.push_str(&format!(
                 "    strncpy(msg.{}, \"hello\", sizeof(msg.{})-1);\n",
                 f.name, f.name
@@ -1762,6 +1920,8 @@ fn generate_c_micro_sender(struct_name: &str, s: &Struct) -> String {
         }
 
         let init = match &f.field_type {
+            // `string<N>` is handled above; `wstring<N>` is left as is.
+            IdlType::BoundedString { .. } => continue,
             IdlType::Primitive(p) => match p {
                 PrimitiveType::Char => "'A'".to_string(),
                 PrimitiveType::Long
@@ -1811,7 +1971,7 @@ fn generate_c_micro_sender(struct_name: &str, s: &Struct) -> String {
         r#"/**
  * @file sender.c
  * @brief Example UDP sender for {struct_name}
- * @note Generated by hdds_gen --target c-micro --example
+ * @note Generated by hddsgen gen c-micro --example
  */
 
 #include <stdio.h>
@@ -1907,7 +2067,7 @@ fn generate_c_micro_receiver(struct_name: &str) -> String {
         r#"/**
  * @file receiver.c
  * @brief Example UDP receiver for {struct_name}
- * @note Generated by hdds_gen --target c-micro --example
+ * @note Generated by hddsgen gen c-micro --example
  */
 
 #include <stdio.h>
@@ -2003,7 +2163,7 @@ int main(int argc, char** argv) {{
 
 fn generate_c_micro_makefile(base_name: &str) -> String {
     format!(
-        r#"# Generated by hdds_gen --target c-micro --example
+        r#"# Generated by hddsgen gen c-micro --example
 # Makefile for {base_name}
 
 CC ?= gcc
@@ -2050,7 +2210,7 @@ fn generate_c_micro_readme(base_name: &str, struct_name: &str) -> String {
     format!(
         r#"# {base_name} - C Micro DDS Types
 
-Generated by `hdds_gen --target c-micro --example`
+Generated by `hddsgen gen c-micro --example`
 
 ## Overview
 
@@ -2092,14 +2252,14 @@ make CC=arm-linux-gnueabihf-gcc
 
 ```
 {base_name}/
-├── include/
-│   ├── generated_types.h     # Generated types ({struct_name}, etc.)
-│   └── hdds_micro_cdr.h      # CDR encoder/decoder runtime
-├── src/
-│   ├── sender.c              # UDP sender example
-│   └── receiver.c            # UDP receiver example
-├── Makefile
-└── README.md
+|-- include/
+|   |-- generated_types.h     # Generated types ({struct_name}, etc.)
+|   `-- hdds_micro_cdr.h      # CDR encoder/decoder runtime
+|-- src/
+|   |-- sender.c              # UDP sender example
+|   `-- receiver.c            # UDP receiver example
+|-- Makefile
+`-- README.md
 ```
 
 ## Using in your embedded project
@@ -2121,12 +2281,11 @@ make CC=arm-linux-gnueabihf-gcc
 
 ## Interoperability
 
-The generated CDR encoding is compatible with:
+The generated CDR encoding follows DDS-XTypes 1.3 (XCDR1 / XCDR2) and is
+read by:
 - hdds (Rust DDS)
-- hdds_gen --target micro (no_std Rust)
-- FastDDS
-- CycloneDDS
-- RTI Connext
+- hddsgen gen micro (no_std Rust)
+- any DDS implementation that follows the same specification
 "#,
         base_name = base_name,
         struct_name = struct_name,

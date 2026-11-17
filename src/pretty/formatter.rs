@@ -9,7 +9,7 @@
 use super::interfaces;
 use super::{
     bitsets, enums,
-    helpers::{indent, push_fmt, type_to_idl},
+    helpers::{ident, indent, push_fmt, type_to_idl},
     modules, structs, unions,
 };
 use crate::ast::{Definition, IdlFile};
@@ -29,8 +29,11 @@ pub(super) fn push_def(out: &mut String, def: &Definition, level: usize) {
                     "{}const {} {} = {};\n",
                     indent(level),
                     type_to_idl(&c.const_type),
-                    c.name,
-                    c.value
+                    ident(&c.name),
+                    crate::codegen::const_literal::literal(
+                        c,
+                        crate::codegen::const_literal::Lang::Idl
+                    )
                 ),
             );
         }
@@ -41,7 +44,10 @@ pub(super) fn push_def(out: &mut String, def: &Definition, level: usize) {
                 crate::ast::ForwardKind::Struct => "struct",
                 crate::ast::ForwardKind::Union => "union",
             };
-            push_fmt(out, format_args!("{}{} {};\n", indent(level), kind, f.name));
+            push_fmt(
+                out,
+                format_args!("{}{} {};\n", indent(level), kind, ident(&f.name)),
+            );
         }
         #[cfg(feature = "interfaces")]
         Definition::Interface(i) => interfaces::push_interface(out, i, level),

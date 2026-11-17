@@ -206,8 +206,7 @@ impl Parser {
             members: Vec::new(),
         };
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
-            let field = self.parse_field()?;
-            ex.members.push(field);
+            ex.members.extend(self.parse_members()?);
         }
         self.expect(&TokenKind::RightBrace, "Expected '}' after exception body")?;
         self.expect(&TokenKind::Semicolon, "Expected ';' after exception")?;

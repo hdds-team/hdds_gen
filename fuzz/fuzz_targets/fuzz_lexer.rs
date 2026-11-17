@@ -8,8 +8,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     // Feed raw bytes to the lexer - should never panic
     if let Ok(s) = std::str::from_utf8(data) {
-        let mut lexer = hddsgen::parser::Parser::new(s);
         // Just tokenize, ignore errors
-        let _ = lexer.parse();
+        let _ = hddsgen::parser::Parser::try_new(s);
     }
 });

@@ -1,176 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright (c) 2025-2026 naskel.com
 
-//! CDR2 codec generation for C++
+//! XCDR2 codec generation for C++.
 //!
-//! Generates `encode_cdr2_le()` and `decode_cdr2_le()` methods for structs.
-//!
-//! Note: `uninlined_format_args` allowed in this module due to extensive `format!()`
-//! usage in code generation that would require significant refactoring.
+//! Generates `encode_cdr2_le[_at]()` and `decode_cdr2_le[_at]()` for
+//! structures and unions through one emitter ([`xcdr2`]), and the `cdr2::`
+//! helpers it calls.
 
-#![allow(clippy::uninlined_format_args)]
-
-use super::super::keywords::cpp_ident;
 use super::index::DefinitionIndex;
-use crate::ast::{Field, Struct};
-use crate::types::{Annotation, AutoIdKind, ExtensibilityKind, IdlType, PrimitiveType};
-use std::fmt::Write;
+use crate::ast::Struct;
 
-mod decode;
-mod encode;
 pub mod pubsub_types;
-
-/// Returns true if the struct has MUTABLE extensibility.
-fn is_mutable(s: &Struct) -> bool {
-    matches!(s.extensibility, Some(ExtensibilityKind::Mutable))
-        || s.annotations.iter().any(|a| {
-            matches!(
-                a,
-                Annotation::Extensibility(ExtensibilityKind::Mutable) | Annotation::Mutable
-            )
-        })
-}
-
-/// Returns true if the struct has APPENDABLE extensibility.
-fn is_appendable(s: &Struct) -> bool {
-    matches!(s.extensibility, Some(ExtensibilityKind::Appendable))
-        || s.annotations.iter().any(|a| {
-            matches!(
-                a,
-                Annotation::Extensibility(ExtensibilityKind::Appendable) | Annotation::Appendable
-            )
-        })
-}
-
-/// Compute member ID for a field in a mutable/appendable struct.
-///
-/// Priority:
-/// - `@id` annotation on the field
-/// - `@autoid(SEQUENTIAL)` on the struct -> use declaration order
-/// - default/`@autoid(HASH)` -> FNV-1a 32-bit & `0x0FFF_FFFF` (`XTypes` ss7.3.1.2.1.2)
-fn compute_member_id(s: &Struct, idx: usize, field: &Field) -> u32 {
-    // Check for explicit @id annotation
-    for ann in &field.annotations {
-        if let Annotation::Id(id) = ann {
-            return *id;
-        }
-    }
-
-    // Check for @autoid(SEQUENTIAL) on struct
-    let autoid_seq = s
-        .annotations
-        .iter()
-        .any(|a| matches!(a, Annotation::AutoId(AutoIdKind::Sequential)));
-    if autoid_seq {
-        #[allow(clippy::cast_possible_truncation)]
-        return idx as u32;
-    }
-
-    // Default: FNV-1a 32-bit hash masked to 28 bits
-    fnv1a_member_id(&field.name)
-}
-
-/// FNV-1a 32-bit hash masked to 28 bits (`XTypes` ss7.3.1.2.1.2)
-fn fnv1a_member_id(name: &str) -> u32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in name.as_bytes() {
-        h ^= u32::from(*b);
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h & 0x0fff_ffff
-}
-
-/// Get the fixed size of a type if it's a fixed-size primitive.
-/// Returns None for variable-size types like strings, sequences, etc.
-const fn cdr2_fixed_size(ty: &IdlType) -> Option<usize> {
-    match ty {
-        IdlType::Primitive(p) => match p {
-            PrimitiveType::Octet
-            | PrimitiveType::UInt8
-            | PrimitiveType::Int8
-            | PrimitiveType::Boolean
-            | PrimitiveType::Char => Some(1),
-            PrimitiveType::Short
-            | PrimitiveType::UnsignedShort
-            | PrimitiveType::Int16
-            | PrimitiveType::UInt16 => Some(2),
-            PrimitiveType::Long
-            | PrimitiveType::UnsignedLong
-            | PrimitiveType::Int32
-            | PrimitiveType::UInt32
-            | PrimitiveType::Float
-            | PrimitiveType::WChar => Some(4),
-            PrimitiveType::LongLong
-            | PrimitiveType::UnsignedLongLong
-            | PrimitiveType::Int64
-            | PrimitiveType::UInt64
-            | PrimitiveType::Double
-            | PrimitiveType::LongDouble => Some(8),
-            PrimitiveType::Fixed { .. } => Some(16),
-            PrimitiveType::String | PrimitiveType::WString | PrimitiveType::Void => None,
-        },
-        _ => None,
-    }
-}
-
-/// Compute LC (Length Code) for EMHEADER based on field size.
-/// LC values per OMG DDS-XTypes v1.3 §7.4.3.4.3 Table 39:
-///   0/1/2/3 = embedded size 1/2/4/8 bytes; 4 = NEXTINT (4-byte u32 length
-///   follows the EMHEADER1); 5 = length from nested type's DHEADER (no
-///   NEXTINT); 6/7 = reserved.
-const fn compute_lc(ty: &IdlType) -> u32 {
-    match cdr2_fixed_size(ty) {
-        Some(1) => 0,
-        Some(2) => 1,
-        Some(4) => 2,
-        Some(8) => 3,
-        _ => 4, // LC=4 (NEXTINT, per OMG XTypes v1.3 §7.4.3.4.3 Table 39)
-    }
-}
-
-#[derive(Copy, Clone)]
-struct PrimitiveScalar {
-    align: usize,
-    width: usize,
-}
-
-const fn primitive_scalar_layout(prim: &PrimitiveType) -> Option<PrimitiveScalar> {
-    match prim {
-        PrimitiveType::Octet
-        | PrimitiveType::UInt8
-        | PrimitiveType::Int8
-        | PrimitiveType::Boolean
-        | PrimitiveType::Char => Some(PrimitiveScalar { align: 1, width: 1 }),
-        PrimitiveType::Short
-        | PrimitiveType::Int16
-        | PrimitiveType::UnsignedShort
-        | PrimitiveType::UInt16 => Some(PrimitiveScalar { align: 2, width: 2 }),
-        PrimitiveType::Long
-        | PrimitiveType::Int32
-        | PrimitiveType::UnsignedLong
-        | PrimitiveType::UInt32
-        | PrimitiveType::Float
-        | PrimitiveType::WChar => Some(PrimitiveScalar { align: 4, width: 4 }),
-        // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4),
-        // not 8. Mirrors `impl_cdr2_primitive!` (1.6.1a-impls-macro) on the
-        // Rust side. Pre-1.6.1e value was `align: 8` (F01 systemic bug).
-        PrimitiveType::LongLong
-        | PrimitiveType::Int64
-        | PrimitiveType::UnsignedLongLong
-        | PrimitiveType::UInt64
-        | PrimitiveType::Double
-        | PrimitiveType::LongDouble => Some(PrimitiveScalar { align: 4, width: 8 }),
-        PrimitiveType::Fixed { .. } => Some(PrimitiveScalar {
-            align: 4,
-            width: 16,
-        }),
-        PrimitiveType::String | PrimitiveType::WString | PrimitiveType::Void => None,
-    }
-}
+pub(super) mod xcdr2;
 
 /// Generates CDR2 encode/decode methods for a struct
-pub(super) fn generate_struct_codec(s: &Struct, idx: &DefinitionIndex, indent: &str) -> String {
-    generate_struct_codec_internal(s, idx, indent, false)
+pub(super) fn generate_struct_codec(
+    s: &Struct,
+    idx: &DefinitionIndex,
+    indent: &str,
+    type_name: &str,
+) -> String {
+    xcdr2::struct_codec(idx, s, indent, false, type_name)
 }
 
 /// Generates CDR2 encode/decode methods for a struct with FastDDS-compatible m_ prefixed fields
@@ -178,673 +28,9 @@ pub(super) fn generate_struct_codec_fastdds(
     s: &Struct,
     idx: &DefinitionIndex,
     indent: &str,
+    type_name: &str,
 ) -> String {
-    generate_struct_codec_internal(s, idx, indent, true)
-}
-
-fn generate_struct_codec_internal(
-    s: &Struct,
-    idx: &DefinitionIndex,
-    indent: &str,
-    fastdds_compat: bool,
-) -> String {
-    if is_mutable(s) {
-        generate_mutable_codec(s, idx, indent, fastdds_compat)
-    } else if is_appendable(s) {
-        generate_appendable_codec(s, idx, indent, fastdds_compat)
-    } else {
-        generate_final_codec(s, idx, indent, fastdds_compat)
-    }
-}
-
-/// Generate codec for FINAL structs (no DHEADER, current behavior).
-fn generate_final_codec(
-    s: &Struct,
-    idx: &DefinitionIndex,
-    indent: &str,
-    fastdds_compat: bool,
-) -> String {
-    let mut out = String::new();
-
-    // encode_cdr2_le_at method (offset-propagating, F01-spec-correct)
-    let _ = writeln!(
-        out,
-        "{indent}/// Encode this struct to CDR2 little-endian format, propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
-    );
-    for field in &s.fields {
-        out.push_str(&encode::emit_encode_field_compat(
-            field,
-            idx,
-            &format!("{indent}    "),
-            fastdds_compat,
-        ));
-    }
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.1e API; preserved for back-compat with PubSubType)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // decode_cdr2_le_at method (offset-propagating, F01-spec-correct)
-    let _ = writeln!(
-        out,
-        "{indent}/// Decode this struct from CDR2 little-endian format, propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
-    );
-    for field in &s.fields {
-        out.push_str(&decode::emit_decode_field_compat(
-            field,
-            idx,
-            &format!("{indent}    "),
-            fastdds_compat,
-        ));
-    }
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.2e API; preserved for back-compat with PubSubType)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}");
-
-    out
-}
-
-/// Generate codec for APPENDABLE structs (DHEADER prefix with payload size).
-fn generate_appendable_codec(
-    s: &Struct,
-    idx: &DefinitionIndex,
-    indent: &str,
-    fastdds_compat: bool,
-) -> String {
-    let mut out = String::new();
-
-    // encode_cdr2_le_at method with DHEADER (offset-propagating)
-    let _ = writeln!(
-        out,
-        "{indent}/// Encode this struct to CDR2 little-endian format (APPENDABLE with DHEADER), propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
-    );
-    // Reserve space for DHEADER (4 bytes)
-    let _ = writeln!(
-        out,
-        "{indent}    if (!cdr2::can_write(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t dheader_pos = offset;");
-    let _ = writeln!(out, "{indent}    offset += 4; // Reserve DHEADER");
-    let _ = writeln!(out, "{indent}    std::size_t payload_start = offset;");
-
-    // Encode all fields
-    for field in &s.fields {
-        out.push_str(&encode::emit_encode_field_compat(
-            field,
-            idx,
-            &format!("{indent}    "),
-            fastdds_compat,
-        ));
-    }
-
-    // Write DHEADER with payload size
-    let _ = writeln!(
-        out,
-        "{indent}    // Write DHEADER (payload size excluding DHEADER itself)"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    std::uint32_t payload_size = static_cast<std::uint32_t>(offset - payload_start);"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    std::memcpy(dst + dheader_pos, &payload_size, 4);"
-    );
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.1e API)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // decode_cdr2_le_at method with DHEADER (offset-propagating)
-    let _ = writeln!(
-        out,
-        "{indent}/// Decode this struct from CDR2 little-endian format (APPENDABLE with DHEADER), propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
-    );
-    // Read DHEADER
-    let _ = writeln!(
-        out,
-        "{indent}    if (!cdr2::can_read(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}    std::uint32_t payload_size;");
-    let _ = writeln!(
-        out,
-        "{indent}    std::memcpy(&payload_size, src + offset, 4);"
-    );
-    let _ = writeln!(out, "{indent}    offset += 4;");
-    let _ = writeln!(
-        out,
-        "{indent}    std::size_t payload_end = offset + payload_size;"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    if (payload_end > len) return -1; // Invalid DHEADER"
-    );
-
-    // Decode all fields
-    for field in &s.fields {
-        out.push_str(&decode::emit_decode_field_compat(
-            field,
-            idx,
-            &format!("{indent}    "),
-            fastdds_compat,
-        ));
-    }
-
-    // Skip any remaining payload (for forward compatibility)
-    let _ = writeln!(
-        out,
-        "{indent}    offset = payload_end; // Skip any unknown trailing fields"
-    );
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.2e API)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}");
-
-    out
-}
-
-/// Generate codec for MUTABLE structs (DHEADER + EMHEADER per field).
-#[allow(clippy::too_many_lines)]
-fn generate_mutable_codec(
-    s: &Struct,
-    idx: &DefinitionIndex,
-    indent: &str,
-    fastdds_compat: bool,
-) -> String {
-    let mut out = String::new();
-
-    // encode_cdr2_le_at method with DHEADER + EMHEADER (offset-propagating)
-    let _ = writeln!(
-        out,
-        "{indent}/// Encode this struct to CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER), propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le_at(std::uint8_t* dst, std::size_t len, std::size_t& offset) const noexcept {{"
-    );
-    // Reserve space for DHEADER (4 bytes)
-    let _ = writeln!(
-        out,
-        "{indent}    if (!cdr2::can_write(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t dheader_pos = offset;");
-    let _ = writeln!(out, "{indent}    offset += 4; // Reserve DHEADER");
-    let _ = writeln!(out, "{indent}    std::size_t payload_start = offset;");
-
-    // Encode each field with EMHEADER
-    for (field_idx, field) in s.fields.iter().enumerate() {
-        let member_id = compute_member_id(s, field_idx, field);
-        let lc = compute_lc(&field.field_type);
-        let use_nextint = lc == 4;
-        let is_optional = field.is_optional();
-
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "{indent}    // Field '{}': member_id={:#010X}, LC={}{}",
-            field.name,
-            member_id,
-            lc,
-            if is_optional { " (optional)" } else { "" }
-        );
-
-        // For optional fields in MUTABLE structs, skip the entire field if absent
-        let escaped = cpp_ident(&field.name);
-        let field_value_expr = if fastdds_compat {
-            format!("this->m_{}", escaped)
-        } else {
-            format!("this->{}", escaped)
-        };
-
-        if is_optional {
-            let _ = writeln!(out, "{indent}    if ({field_value_expr}.has_value()) {{");
-        }
-
-        let inner_indent = if is_optional {
-            format!("{indent}        ")
-        } else {
-            format!("{indent}    ")
-        };
-
-        // Check buffer space for EMHEADER (+ NEXTINT if needed)
-        if use_nextint {
-            let _ = writeln!(
-                out,
-                "{inner_indent}if (!cdr2::can_write(len, offset, 8)) return -1;"
-            );
-        } else {
-            let _ = writeln!(
-                out,
-                "{inner_indent}if (!cdr2::can_write(len, offset, 4)) return -1;"
-            );
-        }
-
-        // Write EMHEADER: M (bit 31) | LC (bits 28-30) | Member ID (bits 0-27)
-        let mu_bit = if field.is_key() || field.is_must_understand() {
-            "0x80000000u | "
-        } else {
-            ""
-        };
-        let _ = writeln!(
-            out,
-            "{inner_indent}std::uint32_t emheader_{idx} = {mu_bit}({lc}u << 28) | ({member_id:#010X}u & 0x0FFFFFFFu);",
-            idx = field_idx,
-            lc = lc,
-            member_id = member_id
-        );
-        let _ = writeln!(
-            out,
-            "{inner_indent}std::memcpy(dst + offset, &emheader_{idx}, 4);",
-            idx = field_idx
-        );
-        let _ = writeln!(out, "{inner_indent}offset += 4;");
-
-        if use_nextint {
-            // Reserve space for NEXTINT (member length)
-            let _ = writeln!(
-                out,
-                "{inner_indent}std::size_t nextint_pos_{idx} = offset;",
-                idx = field_idx
-            );
-            let _ = writeln!(
-                out,
-                "{inner_indent}offset += 4; // Reserve NEXTINT for member length"
-            );
-            let _ = writeln!(
-                out,
-                "{inner_indent}std::size_t member_start_{idx} = offset;",
-                idx = field_idx
-            );
-        }
-
-        // Encode the field value (for optional, use dereferenced value)
-        if is_optional {
-            let deref_expr = format!("(*{})", field_value_expr);
-            out.push_str(&encode::emit_encode_type_for_mutable(
-                &inner_indent,
-                &field.field_type,
-                idx,
-                &deref_expr,
-                &escaped,
-            ));
-        } else {
-            out.push_str(&encode::emit_encode_type_for_mutable(
-                &inner_indent,
-                &field.field_type,
-                idx,
-                &field_value_expr,
-                &escaped,
-            ));
-        }
-
-        if use_nextint {
-            // Write NEXTINT with member length
-            let _ = writeln!(
-                out,
-                "{inner_indent}std::uint32_t member_len_{idx} = static_cast<std::uint32_t>(offset - member_start_{idx});",
-                idx = field_idx
-            );
-            let _ = writeln!(
-                out,
-                "{inner_indent}std::memcpy(dst + nextint_pos_{idx}, &member_len_{idx}, 4);",
-                idx = field_idx
-            );
-        }
-
-        if is_optional {
-            let _ = writeln!(out, "{indent}    }}");
-        }
-    }
-
-    // Write DHEADER with payload size
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "{indent}    // Write DHEADER (payload size excluding DHEADER itself)"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    std::uint32_t payload_size = static_cast<std::uint32_t>(offset - payload_start);"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    std::memcpy(dst + dheader_pos, &payload_size, 4);"
-    );
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.1e API)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes written, or -1 on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int encode_cdr2_le(std::uint8_t* dst, std::size_t len) const noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = encode_cdr2_le_at(dst, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // decode_cdr2_le method with DHEADER + EMHEADER
-    out.push_str(&generate_mutable_decode(s, idx, indent, fastdds_compat));
-
-    out
-}
-
-/// Generate decoder for MUTABLE structs.
-#[allow(clippy::too_many_lines)]
-fn generate_mutable_decode(
-    s: &Struct,
-    idx: &DefinitionIndex,
-    indent: &str,
-    fastdds_compat: bool,
-) -> String {
-    let mut out = String::new();
-
-    let _ = writeln!(
-        out,
-        "{indent}/// Decode this struct from CDR2 little-endian format (MUTABLE with DHEADER + EMHEADER), propagating offset."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}/// Returns 0 on success, negative error code on failure."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le_at(const std::uint8_t* src, std::size_t len, std::size_t& offset) noexcept {{"
-    );
-
-    // Read DHEADER
-    let _ = writeln!(
-        out,
-        "{indent}    if (!cdr2::can_read(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}    std::uint32_t payload_size;");
-    let _ = writeln!(
-        out,
-        "{indent}    std::memcpy(&payload_size, src + offset, 4);"
-    );
-    let _ = writeln!(out, "{indent}    offset += 4;");
-    let _ = writeln!(
-        out,
-        "{indent}    std::size_t payload_end = offset + payload_size;"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}    if (payload_end > len) return -1; // Invalid DHEADER"
-    );
-
-    // Track which fields have been decoded
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "{indent}    // Parse members by EMHEADER until payload exhausted"
-    );
-    let _ = writeln!(out, "{indent}    while (offset < payload_end) {{");
-    let _ = writeln!(
-        out,
-        "{indent}        if (!cdr2::can_read(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}        std::uint32_t emheader;");
-    let _ = writeln!(
-        out,
-        "{indent}        std::memcpy(&emheader, src + offset, 4);"
-    );
-    let _ = writeln!(out, "{indent}        offset += 4;");
-    let _ = writeln!(
-        out,
-        "{indent}        std::uint32_t lc = (emheader >> 28) & 0x7u;"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}        std::uint32_t member_id = emheader & 0x0FFFFFFFu;"
-    );
-
-    // Compute member length based on LC
-    let _ = writeln!(out);
-    let _ = writeln!(out, "{indent}        std::size_t member_len = 0;");
-    let _ = writeln!(out, "{indent}        switch (lc) {{");
-    let _ = writeln!(
-        out,
-        "{indent}            case 0: member_len = 1; break; // 1 byte"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}            case 1: member_len = 2; break; // 2 bytes"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}            case 2: member_len = 4; break; // 4 bytes"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}            case 3: member_len = 8; break; // 8 bytes"
-    );
-    let _ = writeln!(out, "{indent}            case 4: {{ // NEXTINT follows");
-    let _ = writeln!(
-        out,
-        "{indent}                if (!cdr2::can_read(len, offset, 4)) return -1;"
-    );
-    let _ = writeln!(out, "{indent}                std::uint32_t nextint;");
-    let _ = writeln!(
-        out,
-        "{indent}                std::memcpy(&nextint, src + offset, 4);"
-    );
-    let _ = writeln!(out, "{indent}                offset += 4;");
-    let _ = writeln!(out, "{indent}                member_len = nextint;");
-    let _ = writeln!(out, "{indent}                break;");
-    let _ = writeln!(out, "{indent}            }}");
-    let _ = writeln!(out, "{indent}            default:");
-    let _ = writeln!(out, "{indent}                return -1; // Unsupported LC");
-    let _ = writeln!(out, "{indent}        }}");
-
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "{indent}        std::size_t member_end = offset + member_len;"
-    );
-    let _ = writeln!(
-        out,
-        "{indent}        if (member_end > payload_end) return -1; // Member exceeds payload"
-    );
-
-    // Switch on member_id to decode the right field
-    let _ = writeln!(out);
-    let _ = writeln!(out, "{indent}        switch (member_id) {{");
-
-    for (field_idx, field) in s.fields.iter().enumerate() {
-        let escaped = cpp_ident(&field.name);
-        let member_id = compute_member_id(s, field_idx, field);
-        let is_optional = field.is_optional();
-        let _ = writeln!(
-            out,
-            "{indent}            case {member_id:#010X}u: {{ // {}{}",
-            field.name,
-            if is_optional { " (optional)" } else { "" }
-        );
-
-        // For MUTABLE structs with optional fields, decode directly into the optional
-        // (EMHEADER presence means value exists)
-        if is_optional {
-            // Decode into a temp, then assign to the optional
-            let inner_type = super::helpers::type_to_cpp(&field.field_type);
-            let field_expr = if fastdds_compat {
-                format!("this->m_{}", escaped)
-            } else {
-                format!("this->{}", escaped)
-            };
-            let _ = writeln!(
-                out,
-                "{indent}                {inner_type} tmp_{}{{}};\n",
-                escaped
-            );
-            let field_decode = decode::emit_decode_type_for_mutable(
-                &format!("{indent}                "),
-                &field.field_type,
-                idx,
-                &format!("tmp_{}", escaped),
-                &escaped,
-            );
-            out.push_str(&field_decode);
-            let _ = writeln!(
-                out,
-                "{indent}                {field_expr} = std::move(tmp_{name});",
-                name = escaped
-            );
-        } else {
-            let field_decode = decode::emit_decode_field_compat(
-                field,
-                idx,
-                &format!("{indent}                "),
-                fastdds_compat,
-            );
-            out.push_str(&field_decode);
-        }
-
-        let _ = writeln!(out, "{indent}                break;");
-        let _ = writeln!(out, "{indent}            }}");
-    }
-
-    // Skip unknown members (forward compatibility)
-    let _ = writeln!(out, "{indent}            default:");
-    let _ = writeln!(out, "{indent}                // Unknown member: skip it");
-    let _ = writeln!(out, "{indent}                break;");
-    let _ = writeln!(out, "{indent}        }}");
-
-    // Advance to member_end (handles any padding or unused bytes)
-    let _ = writeln!(out, "{indent}        offset = member_end;");
-    let _ = writeln!(out, "{indent}    }}");
-
-    let _ = writeln!(out);
-    let _ = writeln!(out, "{indent}    return 0;");
-    let _ = writeln!(out, "{indent}}}\n");
-
-    // Legacy wrapper (pre-1.6.2e API)
-    let _ = writeln!(
-        out,
-        "{indent}/// Legacy: returns the number of bytes read, or negative on error."
-    );
-    let _ = writeln!(
-        out,
-        "{indent}[[nodiscard]] int decode_cdr2_le(const std::uint8_t* src, std::size_t len) noexcept {{"
-    );
-    let _ = writeln!(out, "{indent}    std::size_t offset = 0;");
-    let _ = writeln!(
-        out,
-        "{indent}    int err = decode_cdr2_le_at(src, len, offset);"
-    );
-    let _ = writeln!(out, "{indent}    if (err) return err;");
-    let _ = writeln!(out, "{indent}    return static_cast<int>(offset);");
-    let _ = writeln!(out, "{indent}}}");
-
-    out
+    xcdr2::struct_codec(idx, s, indent, true, type_name)
 }
 
 /// Generates the CDR2 helper functions header (inline in generated header)
@@ -858,7 +44,7 @@ inline std::size_t align_offset(std::size_t offset, std::size_t alignment) noexc
     return (offset + alignment - 1) & ~(alignment - 1);
 }
 
-// XCDR2 §7.4.3.4.2: padding bytes MUST be zero. `align_offset` alone only
+// XCDR2 (DDS-XTypes 1.3 7.4.3.4.2): padding bytes MUST be zero. `align_offset` alone only
 // advances the position; the gap between the old and new offset must be
 // explicitly zero-filled here. Returns false if the aligned position
 // overflows the destination buffer.
@@ -896,4 +82,387 @@ inline T read_le(const std::uint8_t* src, std::size_t& offset) noexcept {
 
 "
     .to_string()
+        + XCDR2_HELPERS
+        + XCDR2_BOUNDS
+        + XCDR1_HELPERS
 }
+
+/// The XCDR1 reads of the generated decoders (DDS-`XTypes` 1.3 7.4.1),
+/// under their own include guard: a header generated by an earlier hddsgen
+/// keeps its older blocks, which this one only adds to.
+const XCDR1_HELPERS: &str = r"// XCDR1 data path helpers (DDS-XTypes 1.3 7.4.1), little endian, read only:
+// the generated decode_cdr1_le* read the body of a CDR_LE or PL_CDR_LE
+// sample.
+#ifndef HDDS_XCDR1_HELPERS_DEFINED
+#define HDDS_XCDR1_HELPERS_DEFINED
+#define HDDSGEN_CPP_DECODES_XCDR1 1
+namespace cdr2 {
+
+// The origin XCDR1 alignment is measured from: the start of the buffer, or
+// the first byte of the value of the parameter being read (7.4.1.2.2).
+// Alignment is min(size, 8). Every origin is a multiple of 4 bytes from the
+// start of the buffer (a parameter header is aligned at 4 and takes 4 or 12
+// bytes), so the XCDR2 reads of 1, 2 and 4 bytes align as XCDR1 does.
+struct X1 {
+    std::size_t origin;
+
+    template <typename T>
+    bool get(const std::uint8_t* src, std::size_t len, std::size_t& offset, T& value) const noexcept {
+        const std::size_t a = sizeof(T) < 8 ? sizeof(T) : 8;
+        if (offset < origin) return false;
+        std::size_t at = origin + align_offset(offset - origin, a);
+        if (at < offset || at > len || !can_read(len, at, sizeof(T))) return false;
+        std::memcpy(&value, src + at, sizeof(T));
+        offset = at + sizeof(T);
+        return true;
+    }
+};
+
+// The next parameter of an XCDR1 parameter list (7.4.1.2.2), aligned at 4:
+// `last` at PID_LIST_END (0x3F02); otherwise the member id and
+// must-understand flag (FLAG_2 of a PID_EXTENDED (0x3F01) header, FLAG_M of
+// a short one) and the end of the value, bounded by the buffer, `offset` on
+// the value. PID_IGNORE (0x3F03) parameters are skipped.
+inline bool get_pl1(const std::uint8_t* src, std::size_t len, std::size_t& offset, bool& last,
+                    std::uint32_t& id, bool& must_understand, std::size_t& member_end) noexcept {
+    for (;;) {
+        std::uint16_t pid = 0;
+        std::uint16_t plen = 0;
+        offset = align_offset(offset, 4);
+        if (offset > len || !get<std::uint16_t>(src, len, offset, pid) ||
+            !get<std::uint16_t>(src, len, offset, plen)) return false;
+        last = (pid & 0x3FFFu) == 0x3F02u;
+        if (last) return true;
+        std::size_t size = plen;
+        if ((pid & 0x3FFFu) == 0x3F01u) {
+            std::uint32_t h = 0;
+            std::uint32_t n = 0;
+            if (!get<std::uint32_t>(src, len, offset, h) || !get<std::uint32_t>(src, len, offset, n)) return false;
+            id = h & kMemberIdMask;
+            must_understand = (h & 0x40000000u) != 0;
+            size = n;
+        } else {
+            id = pid & 0x3FFFu;
+            must_understand = (pid & 0x4000u) != 0;
+        }
+        if (offset > len || size > len - offset) return false;
+        member_end = offset + size;
+        if ((pid & 0x3FFFu) != 0x3F03u) return true;
+        offset = member_end;
+    }
+}
+
+}  // namespace cdr2
+#endif // HDDS_XCDR1_HELPERS_DEFINED
+
+";
+
+/// The decoder's storage bounds, under their own include guard (a header
+/// generated by an earlier hddsgen keeps its older helper blocks). The
+/// defines are shared with the C backend (same names, same defaults).
+const XCDR2_BOUNDS: &str = r#"// Decoder bounds (define them before including this header to override).
+// CDR_MAX_ALLOC_RATIO: the storage of the elements of every sequence and
+// map of one decode is charged to one budget, the larger of
+// CDR_MAX_ZERO_WIRE_ELEMENTS bytes and this many times the bytes of the
+// body, however the collections nest; a request beyond what is left is
+// refused (decode returns -1, before anything is reserved). Valid data can
+// take far more storage than wire bytes: absent @optional members (one
+// byte on the wire, the whole std::optional in memory), unions with a
+// large branch, APPENDABLE elements from an older writer (a DHEADER on the
+// wire, the defaulted trailing members in memory), empty containers.
+// Raise it for such types.
+#ifndef CDR_MAX_ALLOC_RATIO
+#define CDR_MAX_ALLOC_RATIO 64u
+#endif
+#if CDR_MAX_ALLOC_RATIO < 1
+#error "CDR_MAX_ALLOC_RATIO must be at least 1"
+#endif
+// CDR_MAX_ZERO_WIRE_ELEMENTS: storage, in bytes, of the elements that take
+// no byte on the wire (an empty FINAL structure: one byte each) one decode
+// may build in all, whatever sequences or maps hold them (the bytes cannot
+// bound their count); decode returns -1 beyond. Also the least storage
+// budget of a decode.
+#ifndef CDR_MAX_ZERO_WIRE_ELEMENTS
+#define CDR_MAX_ZERO_WIRE_ELEMENTS 1024u
+#endif
+#ifndef HDDS_XCDR2_BOUNDS_DEFINED
+#define HDDS_XCDR2_BOUNDS_DEFINED
+namespace cdr2 {
+
+constexpr std::size_t kMaxAllocRatio = CDR_MAX_ALLOC_RATIO;
+constexpr std::size_t kMaxZeroWire = CDR_MAX_ZERO_WIRE_ELEMENTS;
+// The links of a map node besides its entry, charged with each entry.
+constexpr std::size_t kMapNodeLinks = 4 * sizeof(void*);
+
+// The budget of one decode, shared by every nested value (passed by
+// reference to the decoder of each nested structure or union).
+struct Budget {
+    std::size_t bytes;
+    std::size_t zero_wire;
+
+    // The budget of a decode of `body` bytes.
+    static Budget for_body(std::size_t body) noexcept {
+        std::size_t b = kMaxZeroWire;
+        if (body > static_cast<std::size_t>(-1) / kMaxAllocRatio) {
+            b = static_cast<std::size_t>(-1);
+        } else if (body * kMaxAllocRatio > b) {
+            b = body * kMaxAllocRatio;
+        }
+        return Budget{b, kMaxZeroWire};
+    }
+
+    // Storage for `n` elements of `elem` bytes: false beyond what is left,
+    // charged otherwise.
+    bool storage(std::size_t n, std::size_t elem) noexcept {
+        if (elem != 0 && n > static_cast<std::size_t>(-1) / elem) return false;
+        if (n * elem > bytes) return false;
+        bytes -= n * elem;
+        return true;
+    }
+
+    // `n` elements of `elem` bytes that take no byte on the wire: false
+    // beyond what is left of the kMaxZeroWire bytes, charged otherwise.
+    bool zero_wire_count(std::size_t n, std::size_t elem) noexcept {
+        if (elem == 0) elem = 1;
+        if (n > zero_wire / elem) return false;
+        zero_wire -= n * elem;
+        return true;
+    }
+};
+
+}  // namespace cdr2
+#endif // HDDS_XCDR2_BOUNDS_DEFINED
+
+"#;
+
+/// The helpers of the XCDR2 data path (DDS-`XTypes` 1.3 7.4.3.5.3), under
+/// their own include guard: a header generated by an earlier hddsgen keeps
+/// the older block above.
+const XCDR2_HELPERS: &str = r"// XCDR2 data path helpers (DDS-XTypes 1.3 7.4.3.5.3), little endian.
+// Alignment is min(size, 4) from the start of the buffer; padding is zero.
+#ifndef HDDS_XCDR2_HELPERS_DEFINED
+#define HDDS_XCDR2_HELPERS_DEFINED
+namespace cdr2 {
+
+constexpr std::size_t xcdr2_align(std::size_t size) noexcept { return size < 4 ? size : 4; }
+// Largest length word; EMHEADER1 must-understand flag and member id mask.
+constexpr std::size_t kMaxLength = 0xFFFFFFFFu;
+constexpr std::uint32_t kMustUnderstand = 0x80000000u;
+constexpr std::uint32_t kMemberIdMask = 0x0FFFFFFFu;
+
+template <typename T>
+inline bool put(std::uint8_t* dst, std::size_t len, std::size_t& offset, T value) noexcept {
+    if (!pad_to_align(dst, offset, len, xcdr2_align(sizeof(T))) || !can_write(len, offset, sizeof(T))) return false;
+    std::memcpy(dst + offset, &value, sizeof(T));
+    offset += sizeof(T);
+    return true;
+}
+
+template <typename T>
+inline bool get(const std::uint8_t* src, std::size_t len, std::size_t& offset, T& value) noexcept {
+    std::size_t at = align_offset(offset, xcdr2_align(sizeof(T)));
+    if (at > len || !can_read(len, at, sizeof(T))) return false;
+    std::memcpy(&value, src + at, sizeof(T));
+    offset = at + sizeof(T);
+    return true;
+}
+
+inline bool put_raw(std::uint8_t* dst, std::size_t len, std::size_t& offset, const void* p, std::size_t n) noexcept {
+    if (!can_write(len, offset, n)) return false;
+    if (n != 0) std::memcpy(dst + offset, p, n);
+    offset += n;
+    return true;
+}
+
+// A length or element count.
+inline bool put_count(std::uint8_t* dst, std::size_t len, std::size_t& offset, std::size_t n) noexcept {
+    if (n > kMaxLength) return false;
+    return put<std::uint32_t>(dst, len, offset, static_cast<std::uint32_t>(n));
+}
+
+// wchar: one UTF-16 code unit.
+inline bool put_wchar(std::uint8_t* dst, std::size_t len, std::size_t& offset, std::uint32_t c) noexcept {
+    if (c > 0xFFFFu) return false;
+    return put<std::uint16_t>(dst, len, offset, static_cast<std::uint16_t>(c));
+}
+
+// DHEADER / NEXTINT: reserve a length word aligned at 4, filled by end_len
+// with the number of bytes written after it.
+inline bool begin_len(std::uint8_t* dst, std::size_t len, std::size_t& offset, std::size_t& at) noexcept {
+    if (!pad_to_align(dst, offset, len, 4) || !can_write(len, offset, 4)) return false;
+    at = offset;
+    offset += 4;
+    return true;
+}
+
+inline bool end_len(std::uint8_t* dst, std::size_t offset, std::size_t at) noexcept {
+    std::size_t n = offset - at - 4;
+    if (n > kMaxLength) return false;
+    std::uint32_t w = static_cast<std::uint32_t>(n);
+    std::memcpy(dst + at, &w, 4);
+    return true;
+}
+
+// Read a DHEADER: the end of the bytes it delimits.
+inline bool get_len(const std::uint8_t* src, std::size_t len, std::size_t& offset, std::size_t& end) noexcept {
+    std::uint32_t n = 0;
+    if (!get<std::uint32_t>(src, len, offset, n) || n > len - offset) return false;
+    end = offset + n;
+    return true;
+}
+
+// Move to `end`, skipping what a newer writer appended; an `end` behind the
+// cursor means the value overran its delimiter.
+inline bool skip_to(std::size_t& offset, std::size_t end) noexcept {
+    if (end < offset) return false;
+    offset = end;
+    return true;
+}
+
+// EMHEADER1 (7.4.3.4.2): M flag, length code, member id.
+inline bool put_emheader(std::uint8_t* dst, std::size_t len, std::size_t& offset, bool must_understand, std::uint32_t lc, std::uint32_t id) noexcept {
+    std::uint32_t w = (must_understand ? kMustUnderstand : 0u) | (lc << 28) | (id & kMemberIdMask);
+    return put<std::uint32_t>(dst, len, offset, w);
+}
+
+// Read an EMHEADER1 and the length of its member (NEXTINT for LC 4; for LC
+// 5 to 7 the value's own leading word, the cursor left on it). `end` is the
+// end of the enclosing structure.
+inline bool get_emheader(const std::uint8_t* src, std::size_t len, std::size_t& offset, std::size_t end,
+                         bool& must_understand, std::uint32_t& id, std::size_t& member_end) noexcept {
+    std::uint32_t h = 0;
+    if (!get<std::uint32_t>(src, len, offset, h)) return false;
+    must_understand = (h >> 31) != 0;
+    id = h & kMemberIdMask;
+    std::uint32_t lc = (h >> 28) & 0x7u;
+    std::size_t size = 0;
+    if (lc < 4) {
+        size = std::size_t(1) << lc;
+    } else {
+        if (!can_read(len, offset, 4)) return false;
+        std::uint32_t n = 0;
+        std::memcpy(&n, src + offset, 4);
+        if (lc == 4) {
+            offset += 4;
+            size = n;
+        } else {
+            std::size_t unit = lc == 5 ? 1 : (lc == 6 ? 4 : 8);
+            if (std::size_t(n) > (static_cast<std::size_t>(-1) - 4) / unit) return false;
+            size = 4 + std::size_t(n) * unit;
+        }
+    }
+    if (offset > end || size > end - offset) return false;
+    member_end = offset + size;
+    return true;
+}
+
+// Length of a bounded string held in an array: up to its first NUL.
+template <typename C>
+inline std::size_t bounded_len(const C* p, std::size_t cap) noexcept {
+    std::size_t n = 0;
+    while (n < cap && p[n] != C(0)) ++n;
+    return n;
+}
+
+// string: length counting the NUL, the bytes, the NUL (bound 0: unbounded).
+inline bool put_string(std::uint8_t* dst, std::size_t len, std::size_t& offset, const char* p, std::size_t n, std::size_t bound) noexcept {
+    if (bound != 0 && n > bound) return false;
+    const std::uint8_t nul = 0;
+    return put_count(dst, len, offset, n + 1) && put_raw(dst, len, offset, p, n) && put_raw(dst, len, offset, &nul, 1);
+}
+
+inline bool get_string(const std::uint8_t* src, std::size_t len, std::size_t& offset, const char*& p, std::size_t& n, std::size_t bound) noexcept {
+    std::uint32_t total = 0;
+    if (!get<std::uint32_t>(src, len, offset, total)) return false;
+    if (total == 0) { p = reinterpret_cast<const char*>(src + offset); n = 0; return true; }
+    if (!can_read(len, offset, total) || src[offset + total - 1] != 0) return false;
+    n = total - 1;
+    if (bound != 0 && n > bound) return false;
+    p = reinterpret_cast<const char*>(src + offset);
+    offset += total;
+    return true;
+}
+
+inline void put_unit(std::uint8_t* dst, std::size_t& offset, std::uint32_t u) noexcept {
+    std::uint16_t v = static_cast<std::uint16_t>(u);
+    std::memcpy(dst + offset, &v, 2);
+    offset += 2;
+}
+
+// wstring: length in bytes, UTF-16 code units, no NUL. A wchar_t of 4 bytes
+// holds a code point, written as one or two units.
+inline bool put_wstring(std::uint8_t* dst, std::size_t len, std::size_t& offset, const wchar_t* p, std::size_t n, std::size_t bound) noexcept {
+    std::size_t units = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::uint32_t c = static_cast<std::uint32_t>(p[i]);
+        if (sizeof(wchar_t) == 2) { units += 1; continue; }
+        if (c > 0x10FFFFu || (c >= 0xD800u && c <= 0xDFFFu)) return false;
+        units += c >= 0x10000u ? 2 : 1;
+    }
+    if (bound != 0 && units > bound) return false;
+    if (!put_count(dst, len, offset, units * 2) || !can_write(len, offset, units * 2)) return false;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::uint32_t c = static_cast<std::uint32_t>(p[i]);
+        if (sizeof(wchar_t) != 2 && c >= 0x10000u) {
+            c -= 0x10000u;
+            put_unit(dst, offset, 0xD800u | (c >> 10));
+            put_unit(dst, offset, 0xDC00u | (c & 0x3FFu));
+        } else {
+            put_unit(dst, offset, c);
+        }
+    }
+    return true;
+}
+
+inline bool get_wstring(const std::uint8_t* src, std::size_t len, std::size_t& offset, const std::uint8_t*& units, std::size_t& count, std::size_t bound) noexcept {
+    std::uint32_t bytes = 0;
+    if (!get<std::uint32_t>(src, len, offset, bytes)) return false;
+    if ((bytes & 1u) != 0 || !can_read(len, offset, bytes)) return false;
+    count = bytes / 2;
+    if (bound != 0 && count > bound) return false;
+    units = src + offset;
+    offset += bytes;
+    return true;
+}
+
+inline std::uint32_t unit_at(const std::uint8_t* u, std::size_t i) noexcept {
+    std::uint16_t v = 0;
+    std::memcpy(&v, u + 2 * i, 2);
+    return v;
+}
+
+// Number of wchar_t the UTF-16 units decode to; false on an unpaired
+// surrogate when wchar_t holds code points.
+inline bool wide_len(const std::uint8_t* u, std::size_t count, std::size_t& n) noexcept {
+    n = 0;
+    for (std::size_t i = 0; i < count; ++i, ++n) {
+        if (sizeof(wchar_t) == 2) continue;
+        std::uint32_t a = unit_at(u, i);
+        if (a >= 0xD800u && a <= 0xDBFFu) {
+            if (i + 1 >= count) return false;
+            std::uint32_t b = unit_at(u, i + 1);
+            if (b < 0xDC00u || b > 0xDFFFu) return false;
+            ++i;
+        } else if (a >= 0xDC00u && a <= 0xDFFFu) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline void wide_copy(const std::uint8_t* u, std::size_t count, wchar_t* out) noexcept {
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        std::uint32_t a = unit_at(u, i);
+        if (sizeof(wchar_t) != 2 && a >= 0xD800u && a <= 0xDBFFu && i + 1 < count) {
+            std::uint32_t b = unit_at(u, ++i);
+            a = 0x10000u + ((a - 0xD800u) << 10) + (b - 0xDC00u);
+        }
+        out[k++] = static_cast<wchar_t>(a);
+    }
+}
+
+}  // namespace cdr2
+#endif // HDDS_XCDR2_HELPERS_DEFINED
+
+";

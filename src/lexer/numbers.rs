@@ -14,6 +14,7 @@ impl Lexer {
         let start_pos = self.current_position();
         let mut lexeme = String::new();
         let mut is_float = false;
+        let mut seen_exponent = false;
 
         if self.peek() == Some('0') {
             if let Some(next) = self.peek_ahead(1) {
@@ -38,8 +39,16 @@ impl Lexer {
                 is_float = true;
                 lexeme.push(ch);
                 self.advance();
-            } else if matches!(ch, 'e' | 'E') && !is_float {
+            } else if matches!(ch, 'e' | 'E')
+                && !seen_exponent
+                && (self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit())
+                    || (self.peek_ahead(1).is_some_and(|c| matches!(c, '+' | '-'))
+                        && self.peek_ahead(2).is_some_and(|c| c.is_ascii_digit())))
+            {
+                // The exponent of a floating-point literal (IDL 4.2 7.2.6.4),
+                // after an integer part (`1e3`) or a fraction (`1.5e3`).
                 is_float = true;
+                seen_exponent = true;
                 lexeme.push(ch);
                 self.advance();
                 if let Some(sign) = self.peek() {

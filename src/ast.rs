@@ -80,6 +80,8 @@ pub enum Definition {
 pub struct Module {
     pub name: String,
     pub definitions: Vec<Definition>,
+    /// Annotations on the module, as `@autoid(HASH) module M { ... }`.
+    pub annotations: Vec<Annotation>,
 }
 
 impl Module {
@@ -89,6 +91,7 @@ impl Module {
         Self {
             name: name.into(),
             definitions: Vec::new(),
+            annotations: Vec::new(),
         }
     }
 
@@ -211,7 +214,7 @@ impl Field {
     #[must_use]
     pub fn get_default(&self) -> Option<&str> {
         self.annotations.iter().find_map(|a| match a {
-            Annotation::Value(v) => Some(v.as_str()),
+            Annotation::Value(v) => Some(v.value.as_str()),
             _ => None,
         })
     }
@@ -260,6 +263,26 @@ impl Enum {
     pub fn add_variant(&mut self, variant: EnumVariant) {
         self.variants.push(variant);
     }
+
+    /// The value of every enumerator, in declaration order.
+    ///
+    /// An enumerator with an explicit value has it; one without takes the
+    /// previous enumerator's value plus one, and the first takes 0 (as in C
+    /// and C++, and DDS-XTypes 1.3 7.3.1.2.1.5). Every backend numbers an
+    /// enumeration through this, so two peers generated from the same IDL
+    /// agree on the wire.
+    #[must_use]
+    pub fn resolved_values(&self) -> Vec<i64> {
+        let mut next: i64 = 0;
+        self.variants
+            .iter()
+            .map(|v| {
+                let value = v.value.unwrap_or(next);
+                next = value.saturating_add(1);
+                value
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +310,8 @@ pub struct Union {
     pub discriminator: IdlType,
     pub cases: Vec<UnionCase>,
     pub annotations: Vec<Annotation>,
+    /// Annotations on the discriminator, as in `switch (@key Kind)`.
+    pub discriminator_annotations: Vec<Annotation>,
 }
 
 impl Union {
@@ -298,7 +323,17 @@ impl Union {
             discriminator,
             cases: Vec::new(),
             annotations: Vec::new(),
+            discriminator_annotations: Vec::new(),
         }
+    }
+
+    /// Whether the discriminator is a key (`switch (@key Kind)`), which makes
+    /// the union's `KeyHolder` the discriminator alone (`XTypes` 1.3 7.2.2.4.7).
+    #[must_use]
+    pub fn discriminator_is_key(&self) -> bool {
+        self.discriminator_annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Key))
     }
 
     /// Adds a case to this union.

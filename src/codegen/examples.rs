@@ -147,6 +147,7 @@ fn convert_default_value_rust(value: &str, ty: &crate::types::IdlType) -> String
 fn default_value_rust(ty: &crate::types::IdlType) -> String {
     use crate::types::{IdlType, PrimitiveType};
     match ty {
+        IdlType::BoundedString { .. } => "String::new()".to_string(),
         IdlType::Primitive(p) => match p {
             PrimitiveType::Boolean => "false".to_string(),
             PrimitiveType::Char | PrimitiveType::WChar => "'A'".to_string(),
@@ -329,7 +330,10 @@ fn default_value_cpp(ty: &crate::types::IdlType) -> String {
             PrimitiveType::Void => String::new(),
         },
         IdlType::Named(n) => format!("{}()", last_ident(n)),
-        IdlType::Sequence { .. } | IdlType::Array { .. } | IdlType::Map { .. } => "{}".to_string(),
+        IdlType::Sequence { .. }
+        | IdlType::Array { .. }
+        | IdlType::Map { .. }
+        | IdlType::BoundedString { .. } => "{}".to_string(),
     }
 }
 
@@ -532,6 +536,7 @@ fn convert_default_value_python(value: &str, ty: &crate::types::IdlType) -> Stri
 fn default_value_python(ty: &crate::types::IdlType) -> String {
     use crate::types::{IdlType, PrimitiveType};
     match ty {
+        IdlType::BoundedString { .. } => "\"\"".to_string(),
         IdlType::Primitive(p) => match p {
             PrimitiveType::Boolean => "False".to_string(),
             PrimitiveType::Char | PrimitiveType::WChar => "\"A\"".to_string(),

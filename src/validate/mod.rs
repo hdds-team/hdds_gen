@@ -4,6 +4,7 @@
 //! Validation pass for IDL AST (selected rules).
 
 mod collect;
+mod collisions;
 mod diagnostics;
 mod engine;
 mod references;

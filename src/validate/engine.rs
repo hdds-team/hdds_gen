@@ -33,6 +33,7 @@ pub fn validate(ast: &IdlFile) -> Vec<ValidationDiag> {
 
     // First, validate references (forward decl resolution / unknown types)
     validate_references(ast, &mut diags);
+    super::collisions::validate_collisions(ast, &mut diags);
 
     // Build typedef map once (recursive)
     let mut typedefs: HashMap<String, IdlType> = HashMap::new();

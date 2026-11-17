@@ -20,6 +20,7 @@ mod enums;
 mod forward;
 mod helpers;
 mod index;
+mod key_hash;
 mod structs;
 mod typedefs;
 mod unions;
@@ -40,6 +41,12 @@ pub struct CppGenerator {
     /// Dependency ASTs for cross-module type resolution in CDR2 codec.
     /// Types from these files are indexed but not emitted.
     dep_asts: Vec<IdlFile>,
+    /// C++ namespace (`Outer::Inner`) every generated type is declared in;
+    /// the runtime helpers stay outside it.
+    namespace: Vec<String>,
+    /// IDL modules enclosing the type being generated, outermost first
+    /// (empty at the root): the scope of its `hdds_type_name`.
+    scope: Vec<String>,
 }
 
 impl CppGenerator {
@@ -50,6 +57,8 @@ impl CppGenerator {
             indent_level: 0,
             fastdds_compat: false,
             dep_asts: Vec::new(),
+            namespace: Vec::new(),
+            scope: Vec::new(),
         }
     }
 
@@ -61,7 +70,22 @@ impl CppGenerator {
             indent_level: 0,
             fastdds_compat: true,
             dep_asts: Vec::new(),
+            namespace: Vec::new(),
+            scope: Vec::new(),
         }
+    }
+
+    /// Declare every generated type inside the C++ namespace `ns`
+    /// (`Outer` or `Outer::Inner`), the runtime helpers staying outside it.
+    /// An absolute IDL name (`::A::T`) is then written `::Outer::A::T`.
+    #[must_use]
+    pub fn with_namespace(mut self, ns: &str) -> Self {
+        self.namespace = ns
+            .split("::")
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        self
     }
 
     /// Set dependency ASTs for cross-module type resolution.
@@ -69,13 +93,25 @@ impl CppGenerator {
         self.dep_asts = deps;
     }
 
+    /// The generator for the body of the IDL module `module`.
     #[must_use]
-    pub(super) const fn nested(&self) -> Self {
+    pub(super) fn nested(&self, module: &str) -> Self {
+        let mut scope = self.scope.clone();
+        scope.push(module.to_string());
         Self {
             indent_level: self.indent_level + 1,
             fastdds_compat: self.fastdds_compat,
             dep_asts: Vec::new(), // nested generators don't need deps (index is shared)
+            namespace: Vec::new(),
+            scope,
         }
+    }
+
+    /// IDL qualified name (`Mod::Sub::Name`) of the type `name` declared in
+    /// the current module: the name the Rust backend announces.
+    #[must_use]
+    pub(super) fn type_name(&self, name: &str) -> String {
+        crate::codegen::idl_qualified_name(&self.scope, name)
     }
 
     #[must_use]
@@ -90,7 +126,7 @@ impl CppGenerator {
                     out,
                     format_args!("{}namespace {} {{\n\n", self.indent(), module.name),
                 );
-                let nested = self.nested();
+                let nested = self.nested(&module.name);
                 for inner in &module.definitions {
                     nested.append_definition(out, inner, idx);
                 }
@@ -144,9 +180,8 @@ impl CppGenerator {
         if includes.needs_string {
             output.push_str("#include <string>\n");
         }
-        if includes.needs_type_traits {
-            output.push_str("#include <type_traits>\n");
-        }
+        // The XCDR2 codec converts through std::remove_reference_t.
+        output.push_str("#include <type_traits>\n");
         if includes.needs_vector {
             output.push_str("#include <vector>\n");
         }
@@ -207,6 +242,10 @@ impl Default for CppGenerator {
 
 impl CodeGenerator for CppGenerator {
     fn generate(&self, ast: &IdlFile) -> Result<String> {
+        // References whose spelling a scope-less lookup would misread are
+        // written as their absolute global name (IDL 4.2 7.5), and module
+        // `@autoid` is carried by each type.
+        let ast = &crate::scope::for_codegen(ast);
         let mut output = String::new();
         let includes = CppIncludes::from_ast(ast);
 
@@ -226,8 +265,30 @@ impl CodeGenerator for CppGenerator {
             idx.index_deps(&self.dep_asts);
         }
 
+        // The KeyHash runtime, before the first type that uses it.
+        if idx.has_key_holder() {
+            output.push_str(&key_hash::runtime_section());
+        }
+
+        let mut types = String::new();
         for def in &ast.definitions {
-            self.append_definition(&mut output, def, &idx);
+            self.append_definition(&mut types, def, &idx);
+        }
+        if self.namespace.is_empty() {
+            output.push_str(&types);
+        } else {
+            let mut roots: Vec<String> = root_names(ast);
+            for dep in &self.dep_asts {
+                roots.extend(root_names(dep));
+            }
+            for part in &self.namespace {
+                push_fmt(&mut output, format_args!("namespace {part} {{\n"));
+            }
+            output.push('\n');
+            output.push_str(&prefix_absolute(&types, &roots, &self.namespace.join("::")));
+            for part in self.namespace.iter().rev() {
+                push_fmt(&mut output, format_args!("}} // namespace {part}\n"));
+            }
         }
 
         Ok(output)
@@ -239,13 +300,12 @@ impl CodeGenerator for CppGenerator {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 struct CppIncludes {
-    needs_array: bool,       // std::array (Array or bounded Sequence)
-    needs_cstdlib: bool,     // std::malloc/free (PubSubType for structs)
-    needs_map: bool,         // std::map (Map types)
-    needs_optional: bool,    // std::optional (optional fields, unions)
-    needs_string: bool,      // std::string (string/wstring types)
-    needs_type_traits: bool, // std::remove_reference_t (enum/union decode)
-    needs_vector: bool,      // std::vector (unbounded Sequence)
+    needs_array: bool,    // std::array (Array or bounded string)
+    needs_cstdlib: bool,  // std::malloc/free (PubSubType for structs)
+    needs_map: bool,      // std::map (Map types)
+    needs_optional: bool, // std::optional (optional fields, unions)
+    needs_string: bool,   // std::string (string/wstring types)
+    needs_vector: bool,   // std::vector (unbounded Sequence)
 }
 
 impl CppIncludes {
@@ -261,6 +321,7 @@ impl CppIncludes {
         match def {
             Definition::Struct(s) => {
                 self.needs_cstdlib = true; // PubSubType uses malloc/free
+                self.needs_string = true; // populate_from_json uses json_unescape returning std::string
                 for field in &s.fields {
                     if field.is_optional() {
                         self.needs_optional = true;
@@ -270,15 +331,12 @@ impl CppIncludes {
             }
             Definition::Union(u) => {
                 self.needs_optional = true;
-                self.needs_type_traits = true;
                 self.scan_type(&u.discriminator);
                 for case in &u.cases {
                     self.scan_type(&case.field.field_type);
                 }
             }
-            Definition::Enum(_) => {
-                self.needs_type_traits = true;
-            }
+            Definition::Enum(_) => {}
             Definition::Typedef(t) => {
                 self.scan_type(&t.base_type);
             }
@@ -287,9 +345,7 @@ impl CppIncludes {
                     self.scan_definition(inner);
                 }
             }
-            Definition::Bitset(_) => {
-                self.needs_type_traits = true;
-            }
+            Definition::Bitset(_) => {}
             Definition::Bitmask(_) | Definition::Const(_) => {}
             Definition::ForwardDecl(_) | Definition::AnnotationDecl(_) => {}
             #[cfg(feature = "interfaces")]
@@ -301,6 +357,8 @@ impl CppIncludes {
 
     fn scan_type(&mut self, t: &IdlType) {
         match t {
+            // `string<N>`: a `std::array` of characters.
+            IdlType::BoundedString { .. } => self.needs_array = true,
             IdlType::Primitive(p) => match p {
                 PrimitiveType::String | PrimitiveType::WString => {
                     self.needs_string = true;
@@ -310,12 +368,8 @@ impl CppIncludes {
                 }
                 _ => {}
             },
-            IdlType::Sequence { inner, bound } => {
-                if bound.is_some() {
-                    self.needs_array = true;
-                } else {
-                    self.needs_vector = true;
-                }
+            IdlType::Sequence { inner, .. } => {
+                self.needs_vector = true;
                 self.scan_type(inner);
             }
             IdlType::Array { inner, .. } => {
@@ -377,4 +431,55 @@ fn uses_fixed_cpp(ast: &IdlFile) -> bool {
         }
     }
     false
+}
+
+/// The names `ast` declares at the root (modules and types), which an
+/// absolute name starts with.
+fn root_names(ast: &IdlFile) -> Vec<String> {
+    ast.definitions
+        .iter()
+        .filter_map(|d| match d {
+            Definition::Module(m) => Some(m.name.clone()),
+            other => crate::scope::declared_name(other).map(|(n, _)| n.to_string()),
+        })
+        .collect()
+}
+
+/// `code` with every absolute name that starts at an IDL root name
+/// (`::A::T`, `::T`) moved under the namespace `ns` (`::Outer::A::T`). An
+/// occurrence counts when `::` is not itself preceded by an identifier
+/// character or a colon, and the root name is followed by a non-identifier
+/// character (or by `PubSubType`, the support class of a root type);
+/// `::std::`, `::hdds::` and the like are untouched unless the IDL declares
+/// such a root name.
+fn prefix_absolute(code: &str, roots: &[String], ns: &str) -> String {
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    let mut copied = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b':'
+            && bytes[i + 1] == b':'
+            && (i == 0 || !(ident(bytes[i - 1]) || bytes[i - 1] == b':'))
+        {
+            let rest = &code[i + 2..];
+            let hit = roots.iter().any(|r| {
+                rest.starts_with(r.as_str())
+                    && (rest.as_bytes().get(r.len()).is_none_or(|&c| !ident(c))
+                        || rest[r.len()..].starts_with("PubSubType"))
+            });
+            if hit {
+                out.push_str(&code[copied..i]);
+                out.push_str("::");
+                out.push_str(ns);
+                copied = i;
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&code[copied..]);
+    out
 }

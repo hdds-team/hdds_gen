@@ -1,0 +1,10 @@
+// Escaped identifiers whose names are also keywords of a target language
+// as TYPE and ENUMERATOR names (C++ `switch`, `case`, `default`): parsed and
+// printed back, not generated (see the 2026-10 changelog entry).
+module _module {
+    enum _switch { _case, _default };
+    struct _struct {
+        _switch _union;
+    };
+    typedef _struct _typedef;
+};

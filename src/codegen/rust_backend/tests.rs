@@ -137,7 +137,7 @@ fn union_default_case_encodes_zero_discriminant() -> TestResult<()> {
 
     // The default case discriminant must encode as 0, not as the case index (1)
     assert!(
-        out.contains("0 as i32"),
+        out.contains("(0i64) as i32"),
         "default case should encode discriminant as 0, got:\n{out}"
     );
     Ok(())
@@ -172,7 +172,7 @@ fn union_default_case_avoids_collision_with_case_zero() -> TestResult<()> {
     // Default must NOT use 0 (collision with case 0) or 1 (collision with case 1)
     // It should pick 2
     assert!(
-        out.contains("2 as i32"),
+        out.contains("(2i64) as i32"),
         "default case should pick discriminant 2 to avoid collision with 0 and 1, got:\n{out}"
     );
     Ok(())
@@ -240,7 +240,7 @@ fn external_field_generates_box_type() -> TestResult<()> {
 
     // Decoder must wrap in Box::new()
     assert!(
-        out.contains("Box::new(child"),
+        out.contains("Box::new(Node::__hdds_dec(__d)?)"),
         "decoder should wrap external field in Box::new(), got:\n{out}"
     );
 
@@ -323,175 +323,10 @@ fn union_default_case_enum_discriminant() -> TestResult<()> {
 
     // X=0, Y=1, so default must pick 2 to avoid collision
     assert!(
-        out.contains("2 as i32"),
+        out.contains("(2i64) as i32"),
         "enum default case should pick discriminant 2 to avoid collision with X(0) and Y(1), got:\n{out}"
     );
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// XCDR alignment tables
-// ---------------------------------------------------------------------------
-//
-// Spec references:
-// - OMG DDS-XTypes v1.3 (formal/2020-02-04) Section 7.4.1.1.1 Table 31
-//   for XCDR v1 (doc page 122).
-// - OMG DDS-XTypes v1.3 Section 7.4.2 + 7.4.3.2.2 Table 37 for XCDR v2
-//   (doc pages 129 and 132).
-
-#[test]
-fn xcdr1_alignment_primitives_match_spec_table_31() {
-    let one_byte = [
-        PrimitiveType::Octet,
-        PrimitiveType::UInt8,
-        PrimitiveType::Int8,
-        PrimitiveType::Boolean,
-        PrimitiveType::Char,
-    ];
-    let two_byte = [
-        PrimitiveType::Short,
-        PrimitiveType::UnsignedShort,
-        PrimitiveType::Int16,
-        PrimitiveType::UInt16,
-    ];
-    let four_byte = [
-        PrimitiveType::Long,
-        PrimitiveType::UnsignedLong,
-        PrimitiveType::Int32,
-        PrimitiveType::UInt32,
-        PrimitiveType::Float,
-        PrimitiveType::WChar,
-        PrimitiveType::String,
-        PrimitiveType::WString,
-    ];
-    let eight_byte = [
-        PrimitiveType::LongLong,
-        PrimitiveType::UnsignedLongLong,
-        PrimitiveType::Int64,
-        PrimitiveType::UInt64,
-        PrimitiveType::Double,
-        PrimitiveType::LongDouble,
-    ];
-
-    for p in &one_byte {
-        assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
-            1,
-            "XCDR1: {p:?} must align to 1"
-        );
-    }
-    for p in &two_byte {
-        assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
-            2,
-            "XCDR1: {p:?} must align to 2"
-        );
-    }
-    for p in &four_byte {
-        assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
-            4,
-            "XCDR1: {p:?} must align to 4"
-        );
-    }
-    for p in &eight_byte {
-        assert_eq!(
-            RustGenerator::xcdr1_alignment(&IdlType::Primitive(*p)),
-            8,
-            "XCDR1: {p:?} must align to 8 per Table 31"
-        );
-    }
-}
-
-#[test]
-fn xcdr2_alignment_caps_8_byte_primitives_at_4() {
-    // Per Section 7.4.2: INT64, UINT64, FLOAT64, FLOAT128 align on 4 in XCDR v2.
-    let capped_at_4 = [
-        PrimitiveType::LongLong,
-        PrimitiveType::UnsignedLongLong,
-        PrimitiveType::Int64,
-        PrimitiveType::UInt64,
-        PrimitiveType::Double,
-        PrimitiveType::LongDouble,
-    ];
-    for p in &capped_at_4 {
-        assert_eq!(
-            RustGenerator::xcdr2_alignment(&IdlType::Primitive(*p)),
-            4,
-            "XCDR2: {p:?} must cap at 4 per Section 7.4.2 (not 8 as in XCDR1)"
-        );
-    }
-}
-
-#[test]
-fn xcdr2_alignment_matches_xcdr1_for_types_not_larger_than_4_bytes() {
-    // For primitives that align to <= 4 in XCDR1, XCDR2 must return the
-    // same value (the MAXALIGN(VERSION2)=4 cap has no effect at or below 4).
-    let types = [
-        IdlType::Primitive(PrimitiveType::Octet),
-        IdlType::Primitive(PrimitiveType::UInt8),
-        IdlType::Primitive(PrimitiveType::Int8),
-        IdlType::Primitive(PrimitiveType::Boolean),
-        IdlType::Primitive(PrimitiveType::Char),
-        IdlType::Primitive(PrimitiveType::Short),
-        IdlType::Primitive(PrimitiveType::UnsignedShort),
-        IdlType::Primitive(PrimitiveType::Int16),
-        IdlType::Primitive(PrimitiveType::UInt16),
-        IdlType::Primitive(PrimitiveType::Long),
-        IdlType::Primitive(PrimitiveType::UnsignedLong),
-        IdlType::Primitive(PrimitiveType::Int32),
-        IdlType::Primitive(PrimitiveType::UInt32),
-        IdlType::Primitive(PrimitiveType::Float),
-        IdlType::Primitive(PrimitiveType::WChar),
-        IdlType::Primitive(PrimitiveType::String),
-        IdlType::Primitive(PrimitiveType::WString),
-    ];
-    for t in &types {
-        assert_eq!(
-            RustGenerator::xcdr1_alignment(t),
-            RustGenerator::xcdr2_alignment(t),
-            "XCDR1 and XCDR2 must match for {t:?} (alignment <= 4)"
-        );
-    }
-}
-
-#[test]
-fn xcdr_alignment_non_primitive_types_unchanged_between_versions() {
-    // Sequences, maps, and named references align via their u32 length prefix
-    // in both versions.
-    let seq = IdlType::Sequence {
-        inner: Box::new(IdlType::Primitive(PrimitiveType::Double)),
-        bound: None,
-    };
-    let map = IdlType::Map {
-        key: Box::new(IdlType::Primitive(PrimitiveType::Int32)),
-        value: Box::new(IdlType::Primitive(PrimitiveType::Double)),
-        bound: None,
-    };
-    let named = IdlType::Named("MyStruct".to_string());
-    for t in [&seq, &map, &named] {
-        assert_eq!(RustGenerator::xcdr1_alignment(t), 4);
-        assert_eq!(RustGenerator::xcdr2_alignment(t), 4);
-    }
-}
-
-#[test]
-fn xcdr_alignment_array_inherits_from_inner_type() {
-    // Fixed arrays inherit the inner element's alignment, so a double[10]
-    // aligns to 8 in XCDR1 and to 4 in XCDR2.
-    let array_of_double = IdlType::Array {
-        inner: Box::new(IdlType::Primitive(PrimitiveType::Double)),
-        size: 10,
-    };
-    assert_eq!(RustGenerator::xcdr1_alignment(&array_of_double), 8);
-    assert_eq!(RustGenerator::xcdr2_alignment(&array_of_double), 4);
-
-    let array_of_u32 = IdlType::Array {
-        inner: Box::new(IdlType::Primitive(PrimitiveType::UInt32)),
-        size: 4,
-    };
-    assert_eq!(RustGenerator::xcdr1_alignment(&array_of_u32), 4);
-    assert_eq!(RustGenerator::xcdr2_alignment(&array_of_u32), 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -528,57 +363,23 @@ fn container_outer_xcdr1_body_invokes_sub_xcdr1_not_cdr2() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    // Sanity: both versions of the inner encoder must exist.
-    assert!(
-        out.contains("pub fn encode_xcdr1_le"),
-        "Inner should emit encode_xcdr1_le"
-    );
-    assert!(
-        out.contains("pub fn encode_xcdr2_le"),
-        "Inner should emit encode_xcdr2_le"
-    );
+    // Both public entry points exist and pick their version.
+    assert!(out.contains("pub fn encode_xcdr1_le(&self, dst: &mut [u8])"));
+    assert!(out.contains("pub fn encode_xcdr2_le(&self, dst: &mut [u8])"));
+    assert!(out.contains("__hdds_cdr::Enc::new(dst, 0, false)"));
+    assert!(out.contains("__hdds_cdr::Enc::new(dst, 0, true)"));
 
-    // Slice the two encoder bodies for the Outer type.
-    let xcdr1_start = out
-        .find("impl Outer {\n    pub fn encode_xcdr1_le")
-        .expect("Outer::encode_xcdr1_le block present");
-    let xcdr1_rest = &out[xcdr1_start..];
-    let xcdr1_end = xcdr1_rest
-        .find("\n}\n")
-        .expect("closing brace of Outer::encode_xcdr1_le found");
-    let xcdr1_body = &xcdr1_rest[..xcdr1_end];
-
-    let xcdr2_start = out
-        .find("impl Outer {\n    pub fn encode_xcdr2_le")
-        .expect("Outer::encode_xcdr2_le block present");
-    let xcdr2_rest = &out[xcdr2_start..];
-    let xcdr2_end = xcdr2_rest
-        .find("\n}\n")
-        .expect("closing brace of Outer::encode_xcdr2_le found");
-    let xcdr2_body = &xcdr2_rest[..xcdr2_end];
-
-    // The XCDR1 body must call the XCDR1 sub-encoder, never the legacy one.
-    // Post-1.6.1a-codegen-encode: the inner call routes through the
-    // offset-aware `_at` wrapper instead of the legacy sub-buffer pattern.
+    // The element is encoded through the same cursor, which carries the
+    // caller's version: never through the trait's primary version.
+    let body = slice_between(&out, "impl Outer {", "pub fn __hdds_dec").expect("Outer codec");
     assert!(
-        xcdr1_body.contains("elem.encode_xcdr1_le_at(dst, &mut offset)"),
-        "Outer::encode_xcdr1_le should invoke elem.encode_xcdr1_le_at(dst, &mut offset). \
-         Body:\n{xcdr1_body}"
+        body.contains("for __x1 in self.items.iter() {")
+            && body.contains("(*__x1).__hdds_enc(__e)?;"),
+        "Outer must encode each element through the shared cursor. Body:\n{body}"
     );
     assert!(
-        !xcdr1_body.contains("encode_cdr2_le"),
-        "Outer::encode_xcdr1_le must not call the legacy encode_cdr2_le. Body:\n{xcdr1_body}"
-    );
-
-    // Same contract for the XCDR2 body.
-    assert!(
-        xcdr2_body.contains("elem.encode_xcdr2_le_at(dst, &mut offset)"),
-        "Outer::encode_xcdr2_le should invoke elem.encode_xcdr2_le_at(dst, &mut offset). \
-         Body:\n{xcdr2_body}"
-    );
-    assert!(
-        !xcdr2_body.contains("encode_cdr2_le"),
-        "Outer::encode_xcdr2_le must not call the legacy encode_cdr2_le. Body:\n{xcdr2_body}"
+        !body.contains("encode_cdr2_le"),
+        "Outer must not call the trait's encode_cdr2_le. Body:\n{body}"
     );
     Ok(())
 }
@@ -589,40 +390,17 @@ fn container_outer_xcdr1_decode_invokes_sub_xcdr1_not_cdr2() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    let xcdr1_start = out
-        .find("impl Outer {\n    pub fn decode_xcdr1_le")
-        .expect("Outer::decode_xcdr1_le block present");
-    let xcdr1_rest = &out[xcdr1_start..];
-    let xcdr1_end = xcdr1_rest
-        .find("\n}\n")
-        .expect("closing brace of Outer::decode_xcdr1_le found");
-    let xcdr1_body = &xcdr1_rest[..xcdr1_end];
-
-    let xcdr2_start = out
-        .find("impl Outer {\n    pub fn decode_xcdr2_le")
-        .expect("Outer::decode_xcdr2_le block present");
-    let xcdr2_rest = &out[xcdr2_start..];
-    let xcdr2_end = xcdr2_rest
-        .find("\n}\n")
-        .expect("closing brace of Outer::decode_xcdr2_le found");
-    let xcdr2_body = &xcdr2_rest[..xcdr2_end];
-
+    assert!(out.contains("__hdds_cdr::Dec::new(src, 0, false)"));
+    assert!(out.contains("__hdds_cdr::Dec::new(src, 0, true)"));
+    let start = out.find("impl Outer {").expect("Outer codec");
+    let body = slice_between(&out[start..], "pub fn __hdds_dec", "\n}\n").expect("decoder");
     assert!(
-        xcdr1_body.contains("Inner>::decode_xcdr1_le"),
-        "Outer::decode_xcdr1_le should invoke <Inner>::decode_xcdr1_le. Body:\n{xcdr1_body}"
+        body.contains("Inner::__hdds_dec(__d)?"),
+        "Outer must decode each element through the shared cursor. Body:\n{body}"
     );
     assert!(
-        !xcdr1_body.contains("decode_cdr2_le"),
-        "Outer::decode_xcdr1_le must not call legacy decode_cdr2_le. Body:\n{xcdr1_body}"
-    );
-
-    assert!(
-        xcdr2_body.contains("Inner>::decode_xcdr2_le"),
-        "Outer::decode_xcdr2_le should invoke <Inner>::decode_xcdr2_le. Body:\n{xcdr2_body}"
-    );
-    assert!(
-        !xcdr2_body.contains("decode_cdr2_le"),
-        "Outer::decode_xcdr2_le must not call legacy decode_cdr2_le. Body:\n{xcdr2_body}"
+        !body.contains("decode_cdr2_le"),
+        "Outer must not call the trait's decode_cdr2_le. Body:\n{body}"
     );
     Ok(())
 }
@@ -660,57 +438,15 @@ fn union_xcdr1_encode_case_named_invokes_sub_xcdr1() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    // Both union versions must exist as inherent methods.
+    assert!(out.contains("impl TaggedInner {\n    pub fn encode_xcdr1_le"));
+    assert!(out.contains("    pub fn encode_xcdr2_le(&self, dst: &mut [u8])"));
+    assert!(out.contains("impl Cdr2Encode for TaggedInner"));
+    let body = slice_between(&out, "impl TaggedInner {", "pub fn __hdds_dec").expect("codec");
     assert!(
-        out.contains("impl TaggedInner {\n    pub fn encode_xcdr1_le"),
-        "TaggedInner should emit encode_xcdr1_le"
+        body.contains("Self::Nested(__v) => {") && body.contains("(*__v).__hdds_enc(__e)?;"),
+        "the Inner case must be encoded through the shared cursor. Body:\n{body}"
     );
-    assert!(
-        out.contains("impl TaggedInner {\n    pub fn encode_xcdr2_le"),
-        "TaggedInner should emit encode_xcdr2_le"
-    );
-    // And the legacy trait delegator.
-    assert!(
-        out.contains("impl Cdr2Encode for TaggedInner"),
-        "TaggedInner should have a Cdr2Encode trait delegator"
-    );
-
-    let xcdr1_start = out
-        .find("impl TaggedInner {\n    pub fn encode_xcdr1_le")
-        .unwrap();
-    let xcdr1_rest = &out[xcdr1_start..];
-    let xcdr1_end = xcdr1_rest.find("\n}\n").unwrap();
-    let xcdr1_body = &xcdr1_rest[..xcdr1_end];
-
-    let xcdr2_start = out
-        .find("impl TaggedInner {\n    pub fn encode_xcdr2_le")
-        .unwrap();
-    let xcdr2_rest = &out[xcdr2_start..];
-    let xcdr2_end = xcdr2_rest.find("\n}\n").unwrap();
-    let xcdr2_body = &xcdr2_rest[..xcdr2_end];
-
-    // Each version's case-encoding of the Inner variant must call the
-    // matching version on the sub-type. Post-1.6.1a-codegen-encode: the
-    // inner call routes through the offset-aware `_at` wrapper instead
-    // of the legacy sub-buffer pattern.
-    assert!(
-        xcdr1_body.contains("v.encode_xcdr1_le_at(dst, &mut offset)"),
-        "TaggedInner::encode_xcdr1_le should invoke v.encode_xcdr1_le_at(dst, &mut offset). \
-         Body:\n{xcdr1_body}"
-    );
-    assert!(
-        !xcdr1_body.contains("encode_cdr2_le"),
-        "TaggedInner::encode_xcdr1_le must not call legacy encode_cdr2_le. Body:\n{xcdr1_body}"
-    );
-    assert!(
-        xcdr2_body.contains("v.encode_xcdr2_le_at(dst, &mut offset)"),
-        "TaggedInner::encode_xcdr2_le should invoke v.encode_xcdr2_le_at(dst, &mut offset). \
-         Body:\n{xcdr2_body}"
-    );
-    assert!(
-        !xcdr2_body.contains("encode_cdr2_le"),
-        "TaggedInner::encode_xcdr2_le must not call legacy encode_cdr2_le. Body:\n{xcdr2_body}"
-    );
+    assert!(!body.contains("encode_cdr2_le"), "Body:\n{body}");
     Ok(())
 }
 
@@ -720,36 +456,13 @@ fn union_xcdr1_decode_case_named_invokes_sub_xcdr1() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    let xcdr1_start = out
-        .find("impl TaggedInner {\n    pub fn decode_xcdr1_le")
-        .unwrap();
-    let xcdr1_rest = &out[xcdr1_start..];
-    let xcdr1_end = xcdr1_rest.find("\n}\n").unwrap();
-    let xcdr1_body = &xcdr1_rest[..xcdr1_end];
-
-    let xcdr2_start = out
-        .find("impl TaggedInner {\n    pub fn decode_xcdr2_le")
-        .unwrap();
-    let xcdr2_rest = &out[xcdr2_start..];
-    let xcdr2_end = xcdr2_rest.find("\n}\n").unwrap();
-    let xcdr2_body = &xcdr2_rest[..xcdr2_end];
-
+    let start = out.find("impl TaggedInner {").expect("TaggedInner codec");
+    let body = slice_between(&out[start..], "pub fn __hdds_dec", "\n}\n").expect("decoder");
     assert!(
-        xcdr1_body.contains("Inner::decode_xcdr1_le"),
-        "TaggedInner::decode_xcdr1_le should invoke Inner::decode_xcdr1_le. Body:\n{xcdr1_body}"
+        body.contains("0 => Self::Nested(Inner::__hdds_dec(__d)?),"),
+        "the Inner case must be decoded through the shared cursor. Body:\n{body}"
     );
-    assert!(
-        !xcdr1_body.contains("decode_cdr2_le"),
-        "TaggedInner::decode_xcdr1_le must not call legacy decode_cdr2_le. Body:\n{xcdr1_body}"
-    );
-    assert!(
-        xcdr2_body.contains("Inner::decode_xcdr2_le"),
-        "TaggedInner::decode_xcdr2_le should invoke Inner::decode_xcdr2_le. Body:\n{xcdr2_body}"
-    );
-    assert!(
-        !xcdr2_body.contains("decode_cdr2_le"),
-        "TaggedInner::decode_xcdr2_le must not call legacy decode_cdr2_le. Body:\n{xcdr2_body}"
-    );
+    assert!(!body.contains("decode_cdr2_le"), "Body:\n{body}");
     Ok(())
 }
 
@@ -846,7 +559,7 @@ fn struct_with_xcdr1_annotation_delegator_targets_xcdr1() -> TestResult<()> {
 
 // ---------------------------------------------------------------------------
 // `Cdr2Encode::encode_cdr2_le_at` REQUIRED method (DDS-XTypes v1.3
-// §7.4.3.4.1 Tab.15) emission proof
+// Sec.7.4.3.4.1 Tab.15) emission proof
 // ---------------------------------------------------------------------------
 //
 // The trait delegator must emit `encode_cdr2_le_at` on every generated
@@ -865,26 +578,18 @@ fn struct_delegator_emits_encode_cdr2_le_at() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    assert!(
-        out.contains(
-            "fn encode_cdr2_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {"
-        ),
-        "Probe delegator must emit encode_cdr2_le_at signature.\nGot:\n{out}"
-    );
     let body = slice_between(
         &out,
         "fn encode_cdr2_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {\n",
         "\n    }\n",
     )
     .expect("encode_cdr2_le_at body not found in Probe delegator");
+    // The `_at` entry point aligns against the start of `dst`, so a value
+    // encoded at an offset lands where the enclosing stream expects it.
     assert!(
-        body.contains("self.encode_xcdr2_le(&mut dst[*offset..])"),
-        "encode_cdr2_le_at must delegate to encode_xcdr2_le on Probe (no @data_representation). \
+        body.contains("self.encode_xcdr2_le_at(dst, offset)"),
+        "encode_cdr2_le_at must delegate to encode_xcdr2_le_at on Probe (no @data_representation). \
          Got body:\n{body}"
-    );
-    assert!(
-        body.contains("*offset += len;"),
-        "encode_cdr2_le_at must advance the global offset cursor. Got body:\n{body}"
     );
     Ok(())
 }
@@ -908,15 +613,15 @@ fn xcdr1_struct_delegator_routes_encode_cdr2_le_at_to_xcdr1() -> TestResult<()> 
     )
     .expect("encode_cdr2_le_at body not found in ProbeV1 delegator");
     assert!(
-        body.contains("self.encode_xcdr1_le(&mut dst[*offset..])"),
+        body.contains("self.encode_xcdr1_le_at(dst, offset)"),
         "ProbeV1 with @data_representation(XCDR1) must delegate encode_cdr2_le_at \
-         -> encode_xcdr1_le. Got body:\n{body}"
+         -> encode_xcdr1_le_at. Got body:\n{body}"
     );
     Ok(())
 }
 
 #[test]
-fn dds_keyhash_cdr2_path_uses_encode_cdr2_le_at() -> TestResult<()> {
+fn dds_keyhash_nested_key_writes_the_nested_key_holder() -> TestResult<()> {
     let mut file = IdlFile::new();
     let mut nested = Struct::new("Nested");
     nested.add_field(Field::new("v", IdlType::Primitive(PrimitiveType::Long)));
@@ -931,37 +636,23 @@ fn dds_keyhash_cdr2_path_uses_encode_cdr2_le_at() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
+    // RTPS 2.5 9.6.4.8 step 3: a nested struct without key members
+    // contributes all its members, through the KeyHolder writer (PLAIN_CDR2
+    // big endian), not a little-endian encoder of the nested type.
     assert!(
-        out.contains("let mut _kbuf = [0u8; 4096];"),
-        "KeyHashKind::Cdr2 path must allocate _kbuf scratch buffer.\nGot:\n{out}"
+        out.contains("w.write_i32(self.k.v);"),
+        "nested KeyHolder member must be written through the KeyHolder writer.\nGot:\n{out}"
     );
     assert!(
-        out.contains("let mut _koffset: usize = 0;"),
-        "KeyHashKind::Cdr2 path must initialize _koffset cursor for offset propagation.\nGot:\n{out}"
+        out.contains("KeyMaxSize::Bounded(4)"),
+        "maximum size of {{ long v }} is 4.\nGot:\n{out}"
     );
     assert!(
-        out.contains("self.k.encode_cdr2_le_at(&mut _kbuf, &mut _koffset).is_ok()"),
-        "KeyHashKind::Cdr2 path must call encode_cdr2_le_at (DDS-XTypes v1.3 \
-         §7.4.3.4.1 Tab.15) on the key field, not legacy encode_cdr2_le.\nGot:\n{out}"
-    );
-    assert!(
-        out.contains("for &b in &_kbuf[.._koffset]"),
-        "KeyHashKind::Cdr2 path must hash up to the cursor position (_koffset), \
-         not a separately tracked length.\nGot:\n{out}"
+        !out.contains("_kbuf"),
+        "the FNV scratch-buffer KeyHash must be gone.\nGot:\n{out}"
     );
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// `Cdr2Decode::decode_cdr2_le_at` REQUIRED method (DDS-XTypes v1.3
-// §7.4.3.4.1 Tab.15) emission proof — symmetric to the encode-side
-// lock tests above. Added in 1.6.2a-codegen-rust.
-// ---------------------------------------------------------------------------
-//
-// The trait delegator must emit `decode_cdr2_le_at` on every generated
-// `impl Cdr2Decode for T` block; the runtime trait makes the method
-// REQUIRED (no default impl) so any missing emission produces an E0046
-// error in downstream crates compiling the generated code.
 
 #[test]
 fn struct_delegator_emits_decode_cdr2_le_at() -> TestResult<()> {
@@ -974,12 +665,6 @@ fn struct_delegator_emits_decode_cdr2_le_at() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    assert!(
-        out.contains(
-            "fn decode_cdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
-        ),
-        "Probe delegator must emit decode_cdr2_le_at signature.\nGot:\n{out}"
-    );
     let body = slice_between(
         &out,
         "fn decode_cdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
@@ -987,13 +672,9 @@ fn struct_delegator_emits_decode_cdr2_le_at() -> TestResult<()> {
     )
     .expect("decode_cdr2_le_at body not found in Probe delegator");
     assert!(
-        body.contains("Self::decode_xcdr2_le(&src[*offset..])"),
-        "decode_cdr2_le_at must delegate to decode_xcdr2_le on Probe (no @data_representation). \
+        body.contains("Self::decode_xcdr2_le_at(src, offset)"),
+        "decode_cdr2_le_at must delegate to decode_xcdr2_le_at on Probe (no @data_representation). \
          Got body:\n{body}"
-    );
-    assert!(
-        body.contains("*offset += used;"),
-        "decode_cdr2_le_at must advance the global offset cursor. Got body:\n{body}"
     );
     Ok(())
 }
@@ -1017,54 +698,17 @@ fn xcdr1_struct_delegator_routes_decode_cdr2_le_at_to_xcdr1() -> TestResult<()> 
     )
     .expect("decode_cdr2_le_at body not found in ProbeV1 delegator");
     assert!(
-        body.contains("Self::decode_xcdr1_le(&src[*offset..])"),
+        body.contains("Self::decode_xcdr1_le_at(src, offset)"),
         "ProbeV1 with @data_representation(XCDR1) must delegate decode_cdr2_le_at \
-         -> decode_xcdr1_le. Got body:\n{body}"
+         -> decode_xcdr1_le_at. Got body:\n{body}"
     );
     Ok(())
 }
 
 #[test]
 fn struct_inherent_emits_decode_xcdr1_le_at_wrapper() -> TestResult<()> {
-    // Symmetric with the xcdr2 inherent test below: an @data_representation(XCDR1)
-    // struct must emit the inherent `pub fn decode_xcdr1_le_at` wrapper next
-    // to the legacy `decode_xcdr1_le`, so an outer XCDR1 decoder can call
-    // `Inner::decode_xcdr1_le_at(src, &mut offset)` directly.
-    let mut file = IdlFile::new();
-    let mut s = Struct::new("ProbeV1");
-    s.add_annotation(Annotation::DataRepresentation("XCDR1".into()));
-    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
-    file.add_definition(Definition::Struct(s));
-
-    let r#gen = RustGenerator::new();
-    let out = r#gen.generate(&file)?;
-
-    assert!(
-        out.contains(
-            "pub fn decode_xcdr1_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
-        ),
-        "ProbeV1 inherent impl must emit decode_xcdr1_le_at wrapper.\nGot:\n{out}"
-    );
-    let body = slice_between(
-        &out,
-        "pub fn decode_xcdr1_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
-        "\n    }\n",
-    )
-    .expect("decode_xcdr1_le_at wrapper body not found");
-    assert!(
-        body.contains("Self::decode_xcdr1_le(&src[*offset..])"),
-        "decode_xcdr1_le_at wrapper must delegate to decode_xcdr1_le on a sub-slice. \
-         Got body:\n{body}"
-    );
-    Ok(())
-}
-
-#[test]
-fn struct_inherent_emits_decode_xcdr2_le_at_wrapper() -> TestResult<()> {
-    // The inherent `impl Probe { ... }` block must include a
-    // `decode_{suffix}_le_at` wrapper next to the legacy `decode_{suffix}_le`
-    // so outer decoders can use the offset-aware call pattern
-    // `Inner::decode_xcdr2_le_at(src, &mut offset)` directly.
+    // The inherent `decode_xcdr1_le_at` reads at `*offset` with the start
+    // of `src` as the alignment origin, then advances `*offset`.
     let mut file = IdlFile::new();
     let mut s = Struct::new("Probe");
     s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
@@ -1073,22 +717,42 @@ fn struct_inherent_emits_decode_xcdr2_le_at_wrapper() -> TestResult<()> {
     let r#gen = RustGenerator::new();
     let out = r#gen.generate(&file)?;
 
-    assert!(
-        out.contains(
-            "pub fn decode_xcdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {"
-        ),
-        "Probe inherent impl must emit decode_xcdr2_le_at wrapper.\nGot:\n{out}"
-    );
     let body = slice_between(
         &out,
-        "pub fn decode_xcdr2_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {\n",
+        "pub fn decode_xcdr1_le_at(src: &[u8], offset: &mut usize) -> Result<Self, CdrError> {\n",
         "\n    }\n",
     )
-    .expect("decode_xcdr2_le_at wrapper body not found");
+    .expect("decode_xcdr1_le_at body not found");
     assert!(
-        body.contains("Self::decode_xcdr2_le(&src[*offset..])"),
-        "decode_xcdr2_le_at wrapper must delegate to decode_xcdr2_le on a sub-slice. \
-         Got body:\n{body}"
+        body.contains("__hdds_cdr::Dec::new(src, *offset, false)")
+            && body.contains("*offset = __d.pos;"),
+        "Got body:\n{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn struct_inherent_emits_decode_xcdr2_le_at_wrapper() -> TestResult<()> {
+    // The inherent `decode_xcdr2_le_at` reads at `*offset` with the start
+    // of `src` as the alignment origin, then advances `*offset`.
+    let mut file = IdlFile::new();
+    let mut s = Struct::new("Probe");
+    s.add_field(Field::new("a", IdlType::Primitive(PrimitiveType::Octet)));
+    file.add_definition(Definition::Struct(s));
+
+    let r#gen = RustGenerator::new();
+    let out = r#gen.generate(&file)?;
+
+    let body = slice_between(
+        &out,
+        "pub fn decode_xcdr2_le_at(src: &[u8], offset: &mut usize) -> Result<Self, CdrError> {\n",
+        "\n    }\n",
+    )
+    .expect("decode_xcdr2_le_at body not found");
+    assert!(
+        body.contains("__hdds_cdr::Dec::new(src, *offset, true)")
+            && body.contains("*offset = __d.pos;"),
+        "Got body:\n{body}"
     );
     Ok(())
 }
@@ -1174,18 +838,19 @@ fn enum_emits_dual_inherent_methods_and_trait_delegator() -> TestResult<()> {
     let out = r#gen.generate(&file)?;
 
     assert!(
-        out.contains("impl Color {\n    pub fn encode_xcdr1_le"),
+        out.contains("    pub fn encode_xcdr1_le(&self, dst: &mut [u8])"),
         "Color should emit encode_xcdr1_le inherent method"
     );
     assert!(
-        out.contains("impl Color {\n    pub fn encode_xcdr2_le"),
+        out.contains("    pub fn encode_xcdr2_le(&self, dst: &mut [u8])"),
         "Color should emit encode_xcdr2_le inherent method"
     );
     assert!(
-        out.contains("impl Color {\n    pub fn decode_xcdr1_le")
-            || out.contains("    pub fn decode_xcdr1_le"),
+        out.contains("    pub fn decode_xcdr1_le"),
         "Color should emit decode_xcdr1_le inherent method"
     );
+    // No @bit_bound: the value is an int32 (XTypes 1.3 7.3.1.2.1.6).
+    assert!(out.contains("let b = ((*self as i64) as i32).to_le_bytes();"));
     assert!(
         out.contains("impl Cdr2Encode for Color"),
         "Color should emit Cdr2Encode trait delegator"
@@ -1193,6 +858,237 @@ fn enum_emits_dual_inherent_methods_and_trait_delegator() -> TestResult<()> {
     assert!(
         out.contains("impl Cdr2Decode for Color"),
         "Color should emit Cdr2Decode trait delegator"
+    );
+    Ok(())
+}
+
+/// A label naming nothing hddsgen knows (a constant is replaced by its
+/// value at parse time) is not a value it computes: the union's key-hash
+/// method must not compile (and must not hash it as 0).
+#[test]
+fn union_key_hash_refuses_a_label_it_cannot_compute() -> TestResult<()> {
+    let mut p =
+        crate::Parser::try_new("union UK switch (long) { case Z: long a; case 2: short b; };")?;
+    let ast = p.parse()?;
+    let out = RustGenerator::new().generate(&ast)?;
+    assert!(
+        out.contains(
+            "compile_error!(\"hddsgen: the label of case `a` of `UK` is not a value hddsgen can compute\")"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("(0i64)"), "{out}");
+    Ok(())
+}
+
+/// The zero-wire weight of a type is computed once per named type: a
+/// 40-level chain of structures each holding the previous one twice (2^40
+/// paths) generates at once; the emitted weight is capped at `u32::MAX`
+/// (a `usize` literal on every target).
+#[test]
+fn zero_wire_weight_of_a_doubling_chain_is_memoised() -> TestResult<()> {
+    use std::fmt::Write as _;
+    let mut idl = String::from("@final struct D0 {};\n");
+    for i in 1..=40 {
+        let _ = writeln!(idl, "@final struct D{i} {{ D{p} a; D{p} b; }};", p = i - 1);
+    }
+    idl.push_str("@final struct HD { sequence<D40> q; };\n");
+    let start = std::time::Instant::now();
+    let ast = crate::Parser::try_new(&idl)?.parse()?;
+    let out = RustGenerator::new().generate(&ast)?;
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    assert!(
+        out.contains(&format!("__d.storage::<D40>(__n2, {}usize)?;", u32::MAX)),
+        "{out}"
+    );
+    Ok(())
+}
+
+/// A structure that reaches itself (here through an `@external` member)
+/// counts as taking bytes: its weight is 0, and computing it terminates.
+#[test]
+fn zero_wire_weight_of_a_cycle_takes_bytes() -> TestResult<()> {
+    let ast = crate::Parser::try_new(
+        "@final struct N { @external N next; }; @final struct HN { sequence<N> q; };",
+    )?
+    .parse()?;
+    let out = RustGenerator::new().generate(&ast)?;
+    assert!(out.contains("__d.storage::<N>(__n2, 0usize)?;"), "{out}");
+    Ok(())
+}
+
+/// The hdds <-> hddsgen compatibility guard (`compat_guard` module) is
+/// emitted exactly once per generated file, before the first use of `hdds`
+/// internals -- not once per type (a file with several types must not
+/// repeat it). Mutation check: removing the
+/// `output.push_str(&compat_guard::compat_guard_block());` call in
+/// `generate()` makes this test fail.
+#[test]
+fn compat_guard_is_emitted_once_before_hdds_use() -> TestResult<()> {
+    let ast = crate::Parser::try_new(
+        "@key struct A { @key long id; long x; }; @key struct B { @key long id; long y; };",
+    )?
+    .parse()?;
+    let out = RustGenerator::new().generate(&ast)?;
+
+    assert_eq!(
+        out.matches("REQUIRES_HDDS_1_5").count(),
+        1,
+        "the guard must appear exactly once per generated file, not per type: {out}"
+    );
+    assert!(
+        out.contains("hdds::codegen::CODEGEN_ABI >= "),
+        "missing the ABI const-assert: {out}"
+    );
+
+    let guard_pos = out.find("REQUIRES_HDDS_1_5").expect("guard present");
+    let use_pos = out
+        .find("use hdds::{Cdr2Encode, Cdr2Decode, CdrError};")
+        .expect("hdds import present");
+    assert!(
+        guard_pos < use_pos,
+        "the guard must come before the first use of hdds internals: {out}"
+    );
+    Ok(())
+}
+
+// -- Output that `cargo clippy -- -D warnings` accepts in a user crate ------
+// (tests/rust_clippy.rs lints the real thing; these pin each rule's shape.)
+
+fn rust_of(idl: &str) -> TestResult<String> {
+    let ast = crate::Parser::try_new(idl)?.parse()?;
+    Ok(RustGenerator::new().generate(&ast)?)
+}
+
+#[test]
+fn enum_decode_widens_only_a_narrow_discriminant() -> TestResult<()> {
+    let out = rust_of(
+        "@bit_bound(8) enum E8 { A, B }; @bit_bound(16) enum E16 { C, D }; enum E32 { E, F };",
+    )?;
+    // Identity conversions are clippy::useless_conversion.
+    assert!(!out.contains("i32::from(i32::"), "{out}");
+    assert!(
+        out.contains("Self::__hdds_from_i32(i32::from(i8::from_le_bytes(b)))?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Self::__hdds_from_i32(i32::from(i16::from_le_bytes(b)))?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Self::__hdds_from_i32(i32::from_le_bytes(b))?"),
+        "{out}"
+    );
+    // clippy::len_zero.
+    assert!(out.contains("if src.is_empty() {"), "{out}");
+    assert!(!out.contains("src.len() < 1 "), "{out}");
+    Ok(())
+}
+
+#[test]
+fn borrowed_places_carry_no_reborrow() -> TestResult<()> {
+    let out = rust_of(
+        "union U switch (long) { case 1: string s; case 2: sequence<octet> o; };\n\
+         struct S { sequence<string> v; string t[2]; map<string, string> m; \
+         @optional string o; @external string e; };",
+    )?;
+    // clippy::borrow_deref_ref and clippy::explicit_auto_deref.
+    for bad in ["&(*__", "&(**__", "&(*self."] {
+        for call in ["__e.string(", "__e.wstring(", "__e.raw("] {
+            assert!(!out.contains(&format!("{call}{bad}")), "{call}{bad}: {out}");
+        }
+    }
+    assert!(out.contains("__e.string(__x"), "{out}");
+    assert!(out.contains("__e.string(&self.e, 0)?;"), "{out}");
+    Ok(())
+}
+
+#[test]
+fn optional_member_decode_is_not_a_let_returned_from_a_block() -> TestResult<()> {
+    let out = rust_of(
+        "@final struct F { @optional string a; }; @appendable struct P { @optional string a; };",
+    )?;
+    // clippy::let_and_return: `let __f0 = ...; __f0 }`.
+    assert!(
+        !out.lines().any(|l| {
+            let l = l.trim();
+            l.starts_with("__f") && l.ends_with("};")
+        }),
+        "{out}"
+    );
+    assert!(
+        out.contains("let __f0 = if __d.xcdr2 {"),
+        "final optional is the conditional itself: {out}"
+    );
+    assert!(
+        out.contains("{ None } else if __d.xcdr2 {"),
+        "appendable optional continues the default branch: {out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn array_decode_without_dheader_is_the_expression_itself() -> TestResult<()> {
+    let out = rust_of("@final struct A { octet raw[16]; long g[2][2]; };")?;
+    // clippy::let_and_return: `let __a0 = ...; __a0`.
+    assert!(!out.contains("let __a"), "{out}");
+    Ok(())
+}
+
+#[test]
+fn mutable_defaults_use_the_forms_clippy_asks_for() -> TestResult<()> {
+    let out = rust_of(
+        "enum E { A, B }; @final struct In { long x; };\n\
+         @mutable struct M { long a; string s; sequence<long> v; E e; In i; double d; };",
+    )?;
+    // clippy::unnecessary_lazy_evaluations, redundant_closure, unwrap_or_default.
+    assert!(out.contains("__f0.unwrap_or(0);"), "{out}");
+    assert!(out.contains("__f1.unwrap_or_default();"), "{out}");
+    assert!(out.contains("__f2.unwrap_or_default();"), "{out}");
+    assert!(out.contains("__f3.unwrap_or_default();"), "{out}");
+    assert!(
+        out.contains("__f4.unwrap_or_else(In::__hdds_default);"),
+        "{out}"
+    );
+    assert!(out.contains("__f5.unwrap_or(0.0);"), "{out}");
+    assert!(!out.contains("unwrap_or_else(||"), "{out}");
+    Ok(())
+}
+
+#[test]
+fn a_64_bit_bitmask_is_not_cast_nor_converted_to_u64() -> TestResult<()> {
+    let out = rust_of(
+        "@bit_bound(64) bitmask Big { B0, B1 }; @bit_bound(16) bitmask Mid { M0, M1 };\n\
+         @final struct S { Big b; Mid m; sequence<Big> v; };",
+    )?;
+    // clippy::unnecessary_cast and useless_conversion.
+    assert!(!out.contains("as u64).to_le_bytes"), "{out}");
+    assert!(!out.contains("u64::from(u64::"), "{out}");
+    assert!(out.contains("u64::from(u16::from_le_bytes("), "{out}");
+    assert!(out.contains("as u16).to_le_bytes"), "{out}");
+    assert!(!out.contains("((("), "no unused parentheses: {out}");
+    Ok(())
+}
+
+#[test]
+fn names_dictated_by_the_idl_carry_a_targeted_allow() -> TestResult<()> {
+    let out = rust_of(
+        "module Outer { enum RGB { RED, GREEN }; @final struct S { @external string e; }; };",
+    )?;
+    assert!(
+        out.contains(
+            "#[allow(non_camel_case_types, clippy::upper_case_acronyms, clippy::enum_variant_names)]"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("#[allow(non_snake_case, clippy::module_inception)]\npub mod Outer {"),
+        "{out}"
+    );
+    assert!(
+        out.contains("#[allow(clippy::box_collection)]\n    pub struct S {")
+            || out.contains("#[allow(clippy::box_collection)]\npub struct S {"),
+        "{out}"
     );
     Ok(())
 }

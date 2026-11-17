@@ -5,19 +5,24 @@
 //!
 //! Renders IDL interface definitions back to source format.
 
-use super::helpers::{indent, push_fmt, type_to_idl};
+use super::helpers::{ident, indent, push_fmt, scoped, type_to_idl};
 use crate::ast::{Interface, ParamDir};
 
 pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
     if let Some(base) = &itf.base {
         push_fmt(
             out,
-            format_args!("{}interface {} : {} {{\n", indent(level), itf.name, base),
+            format_args!(
+                "{}interface {} : {} {{\n",
+                indent(level),
+                ident(&itf.name),
+                scoped(base)
+            ),
         );
     } else {
         push_fmt(
             out,
-            format_args!("{}interface {} {{\n", indent(level), itf.name),
+            format_args!("{}interface {} {{\n", indent(level), ident(&itf.name)),
         );
     }
 
@@ -34,7 +39,7 @@ pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
                 indent(level + 1),
                 kw,
                 type_to_idl(&attr.ty),
-                attr.name
+                ident(&attr.name)
             ),
         );
     }
@@ -44,7 +49,13 @@ pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
         let oneway = if op.oneway { "oneway " } else { "" };
         push_fmt(
             out,
-            format_args!("{}{}{} {}(", indent(level + 1), oneway, ret, op.name),
+            format_args!(
+                "{}{}{} {}(",
+                indent(level + 1),
+                oneway,
+                ret,
+                ident(&op.name)
+            ),
         );
 
         let mut first = true;
@@ -61,7 +72,7 @@ pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
             };
             push_fmt(
                 out,
-                format_args!("{} {} {}", dir, type_to_idl(&param.ty), param.name),
+                format_args!("{} {} {}", dir, type_to_idl(&param.ty), ident(&param.name)),
             );
         }
         out.push(')');
@@ -72,7 +83,7 @@ pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
                 if idx > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(name);
+                out.push_str(&scoped(name));
             }
             out.push(')');
         }
@@ -86,7 +97,7 @@ pub(super) fn push_interface(out: &mut String, itf: &Interface, level: usize) {
 pub(super) fn push_exception(out: &mut String, ex: &crate::ast::Exception, level: usize) {
     push_fmt(
         out,
-        format_args!("{}exception {} {{\n", indent(level), ex.name),
+        format_args!("{}exception {} {{\n", indent(level), ident(&ex.name)),
     );
     for member in &ex.members {
         push_fmt(
@@ -95,7 +106,7 @@ pub(super) fn push_exception(out: &mut String, ex: &crate::ast::Exception, level
                 "{}{} {};\n",
                 indent(level + 1),
                 type_to_idl(&member.field_type),
-                member.name
+                ident(&member.name)
             ),
         );
     }

@@ -34,7 +34,7 @@ pub(super) fn enforce_extensibility_conflicts(
                 kinds.insert(EK::Mutable);
             }
             Annotation::Custom { name, params } if name == "extensibility" => {
-                if let Some((_, v)) = params.first() {
+                if let Some(v) = params.first().map(|p| &p.value) {
                     match v.to_ascii_uppercase().as_str() {
                         "FINAL" => {
                             kinds.insert(EK::Final);
@@ -110,6 +110,27 @@ pub(super) fn validate_type_usage(
     diags: &mut Vec<ValidationDiag>,
     typedefs: &HashMap<String, IdlType>,
 ) {
+    type_usage(ty, context, diags, typedefs, 0);
+}
+
+/// Typedef chains deeper than this are cyclic (the reference validation
+/// reports the cycle); the walk stops there instead of overflowing.
+const MAX_ALIAS_DEPTH: usize = 64;
+
+fn type_usage(
+    ty: &IdlType,
+    context: &str,
+    diags: &mut Vec<ValidationDiag>,
+    typedefs: &HashMap<String, IdlType>,
+    depth: usize,
+) {
+    if depth > MAX_ALIAS_DEPTH {
+        return;
+    }
+    let validate_type_usage =
+        |t: &IdlType, c: &str, d: &mut Vec<ValidationDiag>, m: &HashMap<String, IdlType>| {
+            type_usage(t, c, d, m, depth + 1);
+        };
     match ty {
         IdlType::Map { key, value, .. } => {
             if matches!(key.as_ref(), IdlType::Primitive(p) if matches!(p, PrimitiveType::Float | PrimitiveType::Double | PrimitiveType::LongDouble))
@@ -132,7 +153,7 @@ pub(super) fn validate_type_usage(
                 validate_type_usage(&base, context, diags, typedefs);
             }
         }
-        IdlType::Primitive(_) => {}
+        IdlType::Primitive(_) | IdlType::BoundedString { .. } => {}
     }
 }
 
@@ -188,7 +209,7 @@ pub(super) fn validate_field_annotations(
                         message: format!("{}.{}: @min on non-numeric field", struct_name, f.name),
                     });
                 }
-                if let Some(n) = parse_num(v) {
+                if let Some(n) = parse_num(&v.value) {
                     min_v = Some(n);
                 } else {
                     diags.push(ValidationDiag {
@@ -207,7 +228,7 @@ pub(super) fn validate_field_annotations(
                         message: format!("{}.{}: @max on non-numeric field", struct_name, f.name),
                     });
                 }
-                if let Some(n) = parse_num(v) {
+                if let Some(n) = parse_num(&v.value) {
                     max_v = Some(n);
                 } else {
                     diags.push(ValidationDiag {
@@ -227,7 +248,7 @@ pub(super) fn validate_field_annotations(
                         message: format!("{}.{}: @range on non-numeric field", struct_name, f.name),
                     });
                 }
-                match (parse_num(min), parse_num(max)) {
+                match (parse_num(&min.value), parse_num(&max.value)) {
                     (Some(a), Some(b)) => {
                         min_v = Some(a);
                         max_v = Some(b);
@@ -329,6 +350,9 @@ pub(super) fn validate_custom_annotations(
 ) {
     for a in anns {
         if let Annotation::Custom { name, params } = a {
+            if !index.contains_key(name) && validate_builtin(name, params, anns, context, diags) {
+                continue;
+            }
             if let Some(decl) = index.get(name) {
                 let order: Vec<String> = decl.members.iter().map(|m| m.name.clone()).collect();
                 let mut required: HashSet<String> = decl
@@ -340,7 +364,7 @@ pub(super) fn validate_custom_annotations(
 
                 let mut seen: HashSet<String> = HashSet::new();
                 let mut pos_idx = 0usize;
-                for (k, _v) in params {
+                for crate::types::AnnotationParam { name: k, .. } in params {
                     let key = if k.is_empty() {
                         if pos_idx >= order.len() {
                             diags.push(ValidationDiag {
@@ -432,5 +456,70 @@ fn numeric_limits_float(t: &IdlType) -> Option<(f64, f64)> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Member names declared twice in one scope: an error (IDL 4.2 7.5.2, "An
+/// identifier can only be defined once in a scope"), case-insensitively,
+/// since identifiers differing only in case collide (7.2.3.1). `_a` and `a`
+/// are the same identifier once the escape is removed.
+pub(super) fn validate_unique_member_names<'a>(
+    context: &str,
+    names: impl Iterator<Item = &'a str>,
+    diags: &mut Vec<ValidationDiag>,
+) {
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    for name in names {
+        if let Some(first) = seen.insert(name.to_ascii_lowercase(), name) {
+            diags.push(ValidationDiag {
+                level: Level::Error,
+                message: format!("{context}: member '{name}' collides with member '{first}'"),
+            });
+        }
+    }
+}
+
+/// The standard annotations the parser keeps as custom ones (DDS-XTypes 1.3
+/// 7.3.1.2.1, IDL 4.2 8.3): checked here, never "unknown". `false` for any
+/// other name.
+fn validate_builtin(
+    name: &str,
+    params: &[crate::types::AnnotationParam],
+    anns: &[Annotation],
+    context: &str,
+    diags: &mut Vec<ValidationDiag>,
+) -> bool {
+    use crate::types::AnnotationParamKind;
+    match name {
+        // `@hashid` / `@hashid("name")` (XTypes 1.3 7.3.1.2.1.2): the member
+        // id is the hash of the member name, or of the given string.
+        "hashid" => {
+            let ok = match params {
+                [] => true,
+                [p] => {
+                    (p.name.is_empty() || p.name == "value")
+                        && p.kind == AnnotationParamKind::String
+                }
+                _ => false,
+            };
+            if !ok {
+                diags.push(ValidationDiag {
+                    level: Level::Error,
+                    message: format!(
+                        "{context}: @hashid takes no parameter or one string (the name hashed)"
+                    ),
+                });
+            }
+            if anns.iter().any(|a| matches!(a, Annotation::Id(_))) {
+                diags.push(ValidationDiag {
+                    level: Level::Error,
+                    message: format!("{context}: @id and @hashid both set the member id; keep one"),
+                });
+            }
+            true
+        }
+        // Checked where they apply (data model) or without parameters.
+        "try_construct" | "shared" | "ignore_literal_names" | "default_nested" => true,
+        _ => false,
     }
 }

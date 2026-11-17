@@ -12,9 +12,11 @@ use crate::ast::{ForwardDecl, ForwardKind};
 pub(super) fn generate_forward_decl(generator: &CppGenerator, decl: &ForwardDecl) -> String {
     let mut output = String::new();
     let indent = generator.indent();
+    // An IDL union is generated as a C++ `struct` (discriminator and
+    // storage), so its forward declaration is one too: a class-key
+    // mismatch is an error for `union`.
     let keyword = match decl.kind {
-        ForwardKind::Struct => "struct",
-        ForwardKind::Union => "union",
+        ForwardKind::Struct | ForwardKind::Union => "struct",
     };
     let name = &decl.name;
     push_fmt(&mut output, format_args!("{indent}{keyword} {name};\n\n"));

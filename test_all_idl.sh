@@ -40,6 +40,7 @@ valid_files=(
     examples/canonical/MapsNested.idl
     examples/canonical/UnionsAdvanced.idl
     examples/canonical/BitFeatures.idl
+    examples/canonical/EnumValues.idl
     # examples/macros/FuncLike.idl         # function-like macro expansion (not yet supported)
     # examples/macros/FuncLikeSpaces.idl   # function-like macro expansion (not yet supported)
     # examples/macros/FuncLikeZero.idl     # function-like macro expansion (not yet supported)

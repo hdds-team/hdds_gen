@@ -29,8 +29,17 @@ impl Parser {
 
         let base_struct = if self.check(&TokenKind::Colon) {
             self.advance();
+            // `struct D : ::B`: an absolute base keeps its leading `::`.
+            let absolute = self.check(&TokenKind::DoubleColon);
+            if absolute {
+                self.advance();
+            }
             if let TokenKind::Identifier(base) = &self.current_token().kind {
-                let mut base_name = base.clone();
+                let mut base_name = if absolute {
+                    format!("::{base}")
+                } else {
+                    base.clone()
+                };
                 self.advance();
 
                 while self.check(&TokenKind::DoubleColon) {
@@ -66,8 +75,9 @@ impl Parser {
         struct_def.base_struct = base_struct;
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
-            let field = self.parse_field()?;
-            struct_def.add_field(field);
+            for field in self.parse_members()? {
+                struct_def.add_field(field);
+            }
         }
 
         self.expect(&TokenKind::RightBrace, "Expected '}' after struct body")?;
@@ -76,7 +86,22 @@ impl Parser {
         Ok(struct_def)
     }
 
+    /// One member with a single declarator, `type name[dims];` (a union
+    /// branch, IDL 4.2 7.4.1.4.4.4 `element_spec`).
     pub(crate) fn parse_field(&mut self) -> Result<Field> {
+        let mut fields = self.parse_member(false)?;
+        Ok(fields.remove(0))
+    }
+
+    /// One struct or exception member, `type d1, d2[N], ...;` (IDL 4.2
+    /// 7.4.1.4.4.2 `member ::= type_spec declarators ";"`): a field per
+    /// declarator, each with the member's type and annotations, an array
+    /// declarator wrapping that type for its own name only.
+    pub(crate) fn parse_members(&mut self) -> Result<Vec<Field>> {
+        self.parse_member(true)
+    }
+
+    fn parse_member(&mut self, allow_list: bool) -> Result<Vec<Field>> {
         let mut annotations = Vec::new();
         while self.check(&TokenKind::Annotation) {
             self.advance();
@@ -84,45 +109,59 @@ impl Parser {
             annotations.push(annotation);
         }
 
-        let mut field_type = self.parse_type()?;
+        let base_type = self.parse_type()?;
 
+        let mut fields = Vec::new();
+        loop {
+            let (name, field_type) = self.parse_declarator(&base_type, "field")?;
+            let mut field = Field::new(name, field_type);
+            field.annotations.clone_from(&annotations);
+            fields.push(field);
+            if allow_list && self.check(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        self.expect(&TokenKind::Semicolon, "Expected ';' after field")?;
+        Ok(fields)
+    }
+
+    /// A declarator, `name` or `name[N][M]...`, applied to `base`: the array
+    /// dimensions wrap `base` right to left, so `[3][4]` is
+    /// `Array{3, Array{4, base}}`.
+    pub(crate) fn parse_declarator(
+        &mut self,
+        base: &IdlType,
+        what: &str,
+    ) -> Result<(String, IdlType)> {
         let name = if let TokenKind::Identifier(name) = &self.current_token().kind {
             name.clone()
         } else {
             return Err(ParseError::new(
                 ErrorKind::InvalidIdentifier,
                 self.current_position(),
-                "Expected field name",
+                format!("Expected {what} name"),
             ));
         };
         self.advance();
 
-        // Collect all array dimensions first
         let mut dimensions = Vec::new();
         while self.check(&TokenKind::LeftBracket) {
             self.advance();
-
             let size = self.parse_bound_u32("array bound")?;
-
             self.expect(&TokenKind::RightBracket, "Expected ']' after array size")?;
             dimensions.push(size);
         }
 
-        // Build nested structure from LAST dimension to FIRST (right-to-left)
-        // This ensures [3][4] becomes Array{size:3, inner: Array{size:4, inner: long}}
-        // not Array{size:4, inner: Array{size:3, inner: long}}
+        let mut ty = base.clone();
         for &size in dimensions.iter().rev() {
-            field_type = IdlType::Array {
-                inner: Box::new(field_type),
+            ty = IdlType::Array {
+                inner: Box::new(ty),
                 size,
             };
         }
-
-        self.expect(&TokenKind::Semicolon, "Expected ';' after field")?;
-
-        let mut field = Field::new(name, field_type);
-        field.annotations = annotations;
-
-        Ok(field)
+        Ok((name, ty))
     }
 }

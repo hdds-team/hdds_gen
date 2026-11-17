@@ -8,7 +8,9 @@
 use crate::ast::{AnnotationDecl, AnnotationMember, Definition};
 use crate::error::{ErrorKind, ParseError, Result};
 use crate::token::{Token, TokenKind};
-use crate::types::{Annotation, AutoIdKind, ExtensibilityKind};
+use crate::types::{
+    Annotation, AnnotationParam, AnnotationParamKind, AutoIdKind, ExtensibilityKind,
+};
 
 use super::Parser;
 
@@ -57,6 +59,7 @@ impl Parser {
             Definition::Bitset(data) => data.annotations.append(&mut annotations),
             Definition::Bitmask(data) => data.annotations.append(&mut annotations),
             Definition::Typedef(data) => data.annotations.append(&mut annotations),
+            Definition::Module(data) => data.annotations.append(&mut annotations),
             _ => {}
         }
 
@@ -144,6 +147,87 @@ impl Parser {
         Ok(Definition::AnnotationDecl(decl))
     }
 
+    /// One annotation parameter value: a (possibly scoped, possibly
+    /// absolute) name, a number with an optional sign, a string (adjacent
+    /// literals concatenated, C-style) or a boolean, with its lexical kind.
+    fn parse_annotation_value(&mut self) -> Result<(String, AnnotationParamKind)> {
+        match self.peek().clone() {
+            TokenKind::Identifier(_) | TokenKind::DoubleColon => {
+                let mut v = String::new();
+                if self.check(&TokenKind::DoubleColon) {
+                    self.advance();
+                    v.push_str("::");
+                }
+                loop {
+                    let TokenKind::Identifier(part) = self.peek().clone() else {
+                        return Err(ParseError::new(
+                            ErrorKind::InvalidSyntax,
+                            self.current_position(),
+                            "Expected identifier after '::' in annotation parameter",
+                        ));
+                    };
+                    self.advance();
+                    v.push_str(&part);
+                    if !self.check(&TokenKind::DoubleColon) {
+                        break;
+                    }
+                    self.advance();
+                    v.push_str("::");
+                }
+                Ok((v, AnnotationParamKind::Identifier))
+            }
+            TokenKind::IntegerLiteral(n) => {
+                self.advance();
+                Ok((n.to_string(), AnnotationParamKind::Number))
+            }
+            TokenKind::FloatLiteral(f) => {
+                self.advance();
+                Ok((f.to_string(), AnnotationParamKind::Number))
+            }
+            TokenKind::StringLiteral(first) => {
+                let mut v = first;
+                self.advance();
+                while let TokenKind::StringLiteral(next) = self.peek() {
+                    v.push_str(next);
+                    self.advance();
+                }
+                Ok((v, AnnotationParamKind::String))
+            }
+            TokenKind::BoolLiteral(b) => {
+                self.advance();
+                Ok((
+                    if b { "true" } else { "false" }.to_string(),
+                    AnnotationParamKind::Bool,
+                ))
+            }
+            TokenKind::CharLiteral(c) => {
+                self.advance();
+                Ok((c.to_string(), AnnotationParamKind::Char))
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let v = match self.peek() {
+                    TokenKind::IntegerLiteral(n) => format!("-{n}"),
+                    TokenKind::FloatLiteral(f) => format!("-{f}"),
+                    _ => {
+                        return Err(ParseError::new(
+                            ErrorKind::InvalidSyntax,
+                            self.current_position(),
+                            "Expected numeric value after '-'",
+                        ));
+                    }
+                };
+                self.advance();
+                Ok((v, AnnotationParamKind::Number))
+            }
+            _ => Err(ParseError::new(
+                ErrorKind::InvalidSyntax,
+                self.current_position(),
+                "Expected parameter value",
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(super) fn parse_annotation(&mut self) -> Result<Annotation> {
         let name = match &self.current_token().kind {
@@ -164,114 +248,18 @@ impl Parser {
             let mut params = Vec::new();
 
             while !self.check(&TokenKind::RightParen) && !self.is_at_end() {
-                let (key, value) = match self.peek() {
-                    TokenKind::Identifier(id) => {
-                        let k = id.clone();
-                        self.advance();
-
-                        if self.check(&TokenKind::Equal) {
-                            self.advance();
-                            let v = match self.peek() {
-                                TokenKind::Identifier(val) => {
-                                    let v = val.clone();
-                                    self.advance();
-                                    v
-                                }
-                                TokenKind::IntegerLiteral(n) => {
-                                    let v = n.to_string();
-                                    self.advance();
-                                    v
-                                }
-                                TokenKind::FloatLiteral(f) => {
-                                    let v = f.to_string();
-                                    self.advance();
-                                    v
-                                }
-                                TokenKind::StringLiteral(s) => {
-                                    // Handle C-style string concatenation: "str1" "str2" -> "str1str2"
-                                    let mut v = s.clone();
-                                    self.advance();
-                                    while let TokenKind::StringLiteral(next) = self.peek() {
-                                        v.push_str(next);
-                                        self.advance();
-                                    }
-                                    v
-                                }
-                                TokenKind::BoolLiteral(b) => {
-                                    let v = if *b { "true" } else { "false" }.to_string();
-                                    self.advance();
-                                    v
-                                }
-                                TokenKind::Minus => {
-                                    self.advance();
-                                    match self.peek() {
-                                        TokenKind::IntegerLiteral(n) => {
-                                            let v = format!("-{n}");
-                                            self.advance();
-                                            v
-                                        }
-                                        TokenKind::FloatLiteral(f) => {
-                                            let v = format!("-{f}");
-                                            self.advance();
-                                            v
-                                        }
-                                        _ => {
-                                            return Err(ParseError::new(
-                                                ErrorKind::InvalidSyntax,
-                                                self.current_position(),
-                                                "Expected numeric value after '-'",
-                                            ));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Err(ParseError::new(
-                                        ErrorKind::InvalidSyntax,
-                                        self.current_position(),
-                                        "Expected parameter value",
-                                    ));
-                                }
-                            };
-                            (k, v)
-                        } else {
-                            (String::new(), k)
-                        }
-                    }
-                    TokenKind::IntegerLiteral(n) => {
-                        let v = n.to_string();
-                        self.advance();
-                        (String::new(), v)
-                    }
-                    TokenKind::FloatLiteral(f) => {
-                        let v = f.to_string();
-                        self.advance();
-                        (String::new(), v)
-                    }
-                    TokenKind::StringLiteral(s) => {
-                        // Handle C-style string concatenation: "str1" "str2" -> "str1str2"
-                        let mut v = s.clone();
-                        self.advance();
-                        while let TokenKind::StringLiteral(next) = self.peek() {
-                            v.push_str(next);
-                            self.advance();
-                        }
-                        (String::new(), v)
-                    }
-                    TokenKind::BoolLiteral(b) => {
-                        let v = if *b { "true" } else { "false" }.to_string();
-                        self.advance();
-                        (String::new(), v)
-                    }
-                    _ => {
-                        return Err(ParseError::new(
-                            ErrorKind::InvalidSyntax,
-                            self.current_position(),
-                            "Expected parameter",
-                        ));
-                    }
+                let (first, first_kind) = self.parse_annotation_value()?;
+                let param = if first_kind == AnnotationParamKind::Identifier
+                    && !first.contains("::")
+                    && self.check(&TokenKind::Equal)
+                {
+                    self.advance();
+                    let (value, kind) = self.parse_annotation_value()?;
+                    AnnotationParam::new(first, value, kind)
+                } else {
+                    AnnotationParam::new(String::new(), first, first_kind)
                 };
-
-                params.push((key, value));
+                params.push(param);
 
                 if self.check(&TokenKind::Comma) {
                     self.advance();
@@ -298,18 +286,16 @@ impl Parser {
             "default" => {
                 // @default without params marks union default case
                 // @default(value) sets field default value
-                if let Some((_, val)) = params.first() {
-                    Annotation::Value(val.clone())
-                } else {
-                    Annotation::Default
-                }
+                params
+                    .first()
+                    .map_or(Annotation::Default, |p| Annotation::Value(p.clone()))
             }
             "default_literal" | "default_init" => Annotation::DefaultLiteral,
             "oneway" => Annotation::Oneway,
             "service" => Annotation::Service,
             "ami" => Annotation::Ami,
             "autoid" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     match val.to_ascii_uppercase().as_str() {
                         "SEQUENTIAL" => Annotation::AutoId(AutoIdKind::Sequential),
                         "HASH" => Annotation::AutoId(AutoIdKind::Hash),
@@ -323,7 +309,7 @@ impl Parser {
                 }
             }
             "id" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     val.parse::<u32>().map_or_else(
                         |_| Annotation::Custom {
                             name: name.clone(),
@@ -339,7 +325,7 @@ impl Parser {
                 }
             }
             "position" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     val.parse::<u32>().map_or_else(
                         |_| Annotation::Custom {
                             name: name.clone(),
@@ -355,7 +341,7 @@ impl Parser {
                 }
             }
             "bit_bound" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     val.parse::<u32>().map_or_else(
                         |_| Annotation::Custom {
                             name: name.clone(),
@@ -371,7 +357,7 @@ impl Parser {
                 }
             }
             "unit" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     Annotation::Unit(val.clone())
                 } else {
                     Annotation::Custom {
@@ -380,37 +366,23 @@ impl Parser {
                     }
                 }
             }
-            "min" => {
-                if let Some((_, val)) = params.first() {
-                    Annotation::Min(val.clone())
-                } else {
-                    Annotation::Custom {
-                        name: name.clone(),
-                        params,
-                    }
-                }
-            }
-            "max" => {
-                if let Some((_, val)) = params.first() {
-                    Annotation::Max(val.clone())
-                } else {
-                    Annotation::Custom {
-                        name: name.clone(),
-                        params,
-                    }
-                }
-            }
+            "min" => params.first().cloned().map_or_else(
+                || Annotation::Custom {
+                    name: name.clone(),
+                    params,
+                },
+                Annotation::Min,
+            ),
+            "max" => params.first().cloned().map_or_else(
+                || Annotation::Custom {
+                    name: name.clone(),
+                    params,
+                },
+                Annotation::Max,
+            ),
             "range" => {
-                let mut min_val: Option<String> = None;
-                let mut max_val: Option<String> = None;
-                for (k, v) in &params {
-                    match k.as_str() {
-                        "min" => min_val = Some(v.clone()),
-                        "max" => max_val = Some(v.clone()),
-                        _ => {}
-                    }
-                }
-                if let (Some(min), Some(max)) = (min_val, max_val) {
+                let find = |key: &str| params.iter().find(|p| p.name == key).cloned();
+                if let (Some(min), Some(max)) = (find("min"), find("max")) {
                     Annotation::Range { min, max }
                 } else {
                     Annotation::Custom {
@@ -420,7 +392,7 @@ impl Parser {
                 }
             }
             "data_representation" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     Annotation::DataRepresentation(val.clone())
                 } else {
                     Annotation::Custom {
@@ -430,7 +402,7 @@ impl Parser {
                 }
             }
             "extensibility" => {
-                if let Some((_, val)) = params.first() {
+                if let Some(AnnotationParam { value: val, .. }) = params.first() {
                     match val.to_ascii_uppercase().as_str() {
                         "FINAL" => Annotation::Extensibility(ExtensibilityKind::Final),
                         "APPENDABLE" => Annotation::Extensibility(ExtensibilityKind::Appendable),
@@ -451,12 +423,36 @@ impl Parser {
             "appendable" => Annotation::Appendable,
             "mutable" => Annotation::Mutable,
             "non_serialized" => Annotation::NonSerialized,
-            "topic" => Annotation::Topic,
+            // `@topic`, `@topic("X")`, `@topic(name="X", platform="Y")`; any
+            // other parameter keeps the whole annotation as written (custom).
+            "topic" => {
+                let mut topic_name = None;
+                let mut platform = None;
+                let mut other = false;
+                for p in &params {
+                    match p.name.as_str() {
+                        "name" | "" if topic_name.is_none() => topic_name = Some(p.value.clone()),
+                        "platform" if platform.is_none() => platform = Some(p.value.clone()),
+                        _ => other = true,
+                    }
+                }
+                if other {
+                    Annotation::Custom { name, params }
+                } else {
+                    Annotation::Topic {
+                        name: topic_name,
+                        platform,
+                    }
+                }
+            }
             "verbatim" => {
                 let mut language = String::new();
                 let mut placement = String::new();
                 let mut text = String::new();
-                for (k, v) in &params {
+                for AnnotationParam {
+                    name: k, value: v, ..
+                } in &params
+                {
                     match k.as_str() {
                         "language" | "" if language.is_empty() => v.clone_into(&mut language),
                         "placement" => v.clone_into(&mut placement),

@@ -65,16 +65,29 @@ impl Parser {
             };
             self.expect(&TokenKind::RightAngle, "Expected '>' after bitfield width")?;
 
-            let field_name = if let TokenKind::Identifier(n) = &self.current_token().kind {
-                n.clone()
-            } else {
-                return Err(ParseError::new(
-                    ErrorKind::InvalidIdentifier,
-                    self.current_position(),
-                    "Expected bitfield name",
-                ));
-            };
-            self.advance();
+            // `bitfield<N> a, b, c;` (IDL 4.2 7.4.13.4.3.2): one bitfield per name.
+            let mut names = Vec::new();
+            loop {
+                let TokenKind::Identifier(n) = &self.current_token().kind else {
+                    return Err(ParseError::new(
+                        ErrorKind::InvalidIdentifier,
+                        self.current_position(),
+                        "Expected bitfield name",
+                    ));
+                };
+                names.push(n.clone());
+                self.advance();
+                if self.check(&TokenKind::Comma)
+                    && matches!(
+                        self.tokens.get(self.current + 1).map(|t| &t.kind),
+                        Some(TokenKind::Identifier(_))
+                    )
+                {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
 
             while self.check(&TokenKind::Comma) {
                 self.advance();
@@ -88,9 +101,11 @@ impl Parser {
 
             self.expect(&TokenKind::Semicolon, "Expected ';' after bitfield")?;
 
-            let mut decl = BitfieldDecl::new(width, field_name);
-            decl.annotations = annotations;
-            bitset.add_field(decl);
+            for field_name in names {
+                let mut decl = BitfieldDecl::new(width, field_name);
+                decl.annotations.clone_from(&annotations);
+                bitset.add_field(decl);
+            }
         }
 
         self.expect(&TokenKind::RightBrace, "Expected '}' after bitset body")?;

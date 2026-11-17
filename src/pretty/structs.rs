@@ -5,7 +5,9 @@
 //!
 //! Renders IDL struct definitions back to source format.
 
-use super::helpers::{indent, push_fmt, render_annotation, split_array, type_to_idl};
+use super::helpers::{
+    ident, indent, push_fmt, render_annotation, scoped, split_array, type_to_idl,
+};
 use crate::ast::Struct;
 use std::fmt::Write;
 
@@ -20,10 +22,18 @@ pub(super) fn push_struct(out: &mut String, s: &Struct, level: usize) {
     if let Some(base) = &s.base_struct {
         push_fmt(
             out,
-            format_args!("{}struct {} : {} {{\n", indent(level), s.name, base),
+            format_args!(
+                "{}struct {} : {} {{\n",
+                indent(level),
+                ident(&s.name),
+                scoped(base)
+            ),
         );
     } else {
-        push_fmt(out, format_args!("{}struct {} {{\n", indent(level), s.name));
+        push_fmt(
+            out,
+            format_args!("{}struct {} {{\n", indent(level), ident(&s.name)),
+        );
     }
 
     let mut type_width = 0usize;
@@ -38,7 +48,7 @@ pub(super) fn push_struct(out: &mut String, s: &Struct, level: usize) {
         }
 
         let (base, dims) = split_array(&f.field_type);
-        let mut name_with_dims = f.name.clone();
+        let mut name_with_dims = ident(&f.name);
         for d in dims {
             let _ = write!(&mut name_with_dims, "[{d}]");
         }

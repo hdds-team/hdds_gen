@@ -10,7 +10,7 @@ use crate::error::{ErrorKind, ParseError, Position, Result};
 use crate::token::{Token, TokenKind};
 
 impl Lexer {
-    fn read_identifier(&mut self) -> Token {
+    fn read_identifier(&mut self) -> Result<Token> {
         let start_pos = self.current_position();
         let mut lexeme = String::new();
 
@@ -30,13 +30,29 @@ impl Lexer {
             }
         }
 
+        // An escaped identifier (IDL 4.2 7.2.3.2): a leading underscore makes
+        // the rest an identifier, never a keyword, and is not part of it
+        // (`_map` is the identifier `map`). What follows it must itself be
+        // an identifier, which begins with a letter (7.2.3).
+        if let Some(name) = lexeme.strip_prefix('_') {
+            if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                return Err(ParseError::new(
+                    ErrorKind::InvalidSyntax,
+                    start_pos,
+                    format!("Invalid identifier '{lexeme}': an identifier begins with a letter, after an optional escaping '_'"),
+                ));
+            }
+            let name = name.to_string();
+            return Ok(Token::new(TokenKind::Identifier(name), lexeme, start_pos));
+        }
+
         let kind = TokenKind::from_keyword(&lexeme).unwrap_or_else(|| match lexeme.as_str() {
             "true" | "TRUE" => TokenKind::BoolLiteral(true),
             "false" | "FALSE" => TokenKind::BoolLiteral(false),
             _ => TokenKind::Identifier(lexeme.clone()),
         });
 
-        Token::new(kind, lexeme, start_pos)
+        Ok(Token::new(kind, lexeme, start_pos))
     }
 
     fn read_string(&mut self) -> Result<Token> {
@@ -154,8 +170,18 @@ impl Lexer {
             .peek()
             .ok_or_else(|| ParseError::new(ErrorKind::UnexpectedEof, pos, "Unexpected EOF"))?;
 
+        // A wide literal, `L'x'` / `L"text"` (IDL 4.2 7.2.6.2-3): the same
+        // token as the narrow one; the type it initializes says it is wide.
+        if ch == 'L' && matches!(self.peek_ahead(1), Some('\'' | '"')) {
+            self.advance();
+            return if self.peek() == Some('"') {
+                self.read_string()
+            } else {
+                self.read_char()
+            };
+        }
         if ch.is_ascii_alphabetic() || ch == '_' {
-            return Ok(self.read_identifier());
+            return self.read_identifier();
         }
         if ch.is_ascii_digit() {
             return self.read_number();
@@ -220,7 +246,7 @@ impl Lexer {
 
     fn read_preprocessor_token(&mut self, pos: Position) -> Result<Token> {
         self.advance();
-        let directive = self.read_identifier();
+        let directive = self.read_identifier()?;
         let name = directive.lexeme;
         let kind = match name.as_str() {
             "define" => TokenKind::PreprocessorDefine,

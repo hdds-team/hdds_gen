@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Copyright (c) 2025-2026 naskel.com
+
+// KeyHash coverage types beyond the golden set: every primitive width,
+// enums and bitmasks at their bit_bound, typedefs, collections of
+// primitives, unions with and without a key discriminator, @autoid(HASH)
+// and @id ordering. Expected values: an independent Python transcription
+// of RTPS 2.5 9.6.4.8 (struct.pack('>...') + hashlib.md5).
+module X {
+  enum Color { RED, GREEN, BLUE };
+  @bit_bound(8) enum Small { S0, S1, S2 };
+  @bit_bound(16) enum Mid { M0, M1 };
+  @bit_bound(8) bitmask Flags8 { F0, F1 };
+  bitmask Flags32 { G0, G1 };
+  @bit_bound(64) bitmask Flags64 { H0, H1 };
+  typedef long MyLong;
+  typedef string<6> Name6;
+  union U switch (long) { case 1: long a; case 2: string b; };
+  union UK switch (@key Color) { case RED: long r; case GREEN: double g; case BLUE: octet bl; };
+  @final struct Scalars { @key boolean b; @key char c; @key wchar wc; @key int8 i8v; @key short s; @key double d; @key unsigned short us; @key float f; long nk; };
+  @final struct Enums { @key Color c; @key Small sm; @key Mid md; @key Flags8 f8; @key Flags32 f32; @key Flags64 f64; @key MyLong ml; };
+  @final struct Colls { @key sequence<long> sq; @key sequence<octet, 4> bsq; @key long arr[3]; @key octet oct2[2][2]; @key wstring<4> ws; @key Name6 n6; };
+  @final struct Unions { @key U u; @key UK uk; @key octet tail; };
+  @autoid(HASH) @final struct Hashed { @key long color; @key long shapesize; };
+  @final struct FinalIds { @id(5) @key long a; @id(1) @key octet b; };
+  union UD switch (short) { case 1: long a; case 2: short b; default: octet o; };
+  @final struct Defaults { @key UD u; };
+  @mutable struct MutSeq { @key long a; @key short b; @key string c; };
+  // sequence<char> / sequence<wchar> keys: an element count and the
+  // elements, no NUL (XTypes 1.3 7.4.3.5.3 rule 11). Expected values:
+  // Cyclone DDS 0.11 (ddsi_serdata_get_keyhash).
+  @final struct SeqChars { @key sequence<char, 4> c; @key sequence<wchar, 3> w; long x; };
+  @final struct SeqCharU { @key sequence<char> c; long x; };
+};
+
+// Module-level @autoid(HASH) applies to the structures it contains (XTypes
+// 1.3 7.3.1.2.1.1): shapesize (0x047790da) before color (0x0fa5dd70).
+// Expected value: Cyclone DDS 0.11 (ddsi_serdata_get_keyhash).
+@autoid(HASH) module MH {
+  @final struct ModHashed { @key long color; @key long shapesize; };
+};

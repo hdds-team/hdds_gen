@@ -9,6 +9,8 @@
 //! - Field descriptions (name, type, `@key` status)
 //! - Type hash computation
 
+use super::super::key_holder::TypeIndex;
+use super::super::keywords::c_ident;
 use crate::ast::Struct;
 use crate::types::{Annotation, IdlType, PrimitiveType};
 use std::fmt::Write;
@@ -32,8 +34,40 @@ fn to_snake_case(name: &str) -> String {
 /// Generate `TypeDescriptor` struct and functions for a struct
 #[must_use]
 pub fn generate_type_descriptor(s: &Struct) -> String {
-    let type_name = &s.name;
-    let snake_name = to_snake_case(type_name);
+    let mut file = crate::ast::IdlFile::new();
+    file.add_definition(crate::ast::Definition::Struct(s.clone()));
+    generate_type_descriptor_in(s, &TypeIndex::new(&file))
+}
+
+/// [`generate_type_descriptor`] with the type index of the whole file.
+///
+/// The `KeyHolder` of a key member of a named type needs that index. Alone,
+/// a struct only knows its own members: a named key type is then refused
+/// and its `compute_key()` returns -2.
+#[must_use]
+pub fn generate_type_descriptor_in(s: &Struct, keys: &TypeIndex) -> String {
+    generate_type_descriptor_scoped(s, keys, &std::collections::HashMap::new())
+}
+
+/// [`generate_type_descriptor_in`] for a module-scoped AST.
+///
+/// `idl_names` maps the C name of each type (`codegen::c::scoping`) to its
+/// IDL qualified name (`a::inner::T`): the name the descriptor reports and
+/// hashes, for the structure and for its member types.
+#[must_use]
+pub(crate) fn generate_type_descriptor_scoped(
+    s: &Struct,
+    keys: &TypeIndex,
+    idl_names: &std::collections::HashMap<String, String>,
+) -> String {
+    let type_name = idl_names.get(&s.name).unwrap_or(&s.name);
+    // Function prefix: each scope segment in snake case (`a::MyType`:
+    // `a_my_type`).
+    let snake_name = type_name
+        .split("::")
+        .map(to_snake_case)
+        .collect::<Vec<_>>()
+        .join("_");
 
     // Collect @key fields
     let key_field_count = s
@@ -70,7 +104,7 @@ pub fn generate_type_descriptor(s: &Struct) -> String {
     out.push_str("    CDR_TYPE_STRUCT = 4,\n");
     out.push_str("    CDR_TYPE_ENUM = 5,\n");
     out.push_str("    CDR_TYPE_UNION = 6,\n");
-    out.push_str("    CDR_TYPE_MAP = 7,\n");
+    out.push_str("    CDR_TYPE_MAP = 7\n");
     out.push_str("} cdr_type_kind_t;\n");
     out.push_str("#endif /* CDR_TYPE_KIND_DEFINED */\n\n");
 
@@ -100,17 +134,21 @@ pub fn generate_type_descriptor(s: &Struct) -> String {
                 .any(|a| matches!(a, Annotation::Key)),
         );
         let type_kind = get_type_kind(&field.field_type);
-        let type_name_str = field.field_type.to_idl_string();
+        let type_name_str = super::scoping::idl_string(&field.field_type, idl_names);
         let _ = writeln!(
             out,
             "    {{ \"{}\", \"{}\", {}, {}, 0 }},",
             field.name, type_name_str, is_key, type_kind
         );
     }
+    if s.fields.is_empty() {
+        // An empty initializer list is not ISO C.
+        out.push_str("    { NULL, NULL, 0, 0, 0 }\n");
+    }
     out.push_str("};\n\n");
 
     // Type hash computation (FNV-1a based on type structure)
-    let type_hash = compute_type_hash(s);
+    let type_hash = compute_type_hash(s, type_name, idl_names);
     let _ = writeln!(
         out,
         "/* Type hash for {} (computed from type structure) */",
@@ -141,7 +179,7 @@ pub fn generate_type_descriptor(s: &Struct) -> String {
     let _ = writeln!(out, "    {},", s.fields.len());
     let _ = writeln!(out, "    {key_field_count},");
     let _ = writeln!(out, "    {snake_name}_fields,");
-    out.push_str("    { /* type_hash copied below */ }\n");
+    out.push_str("    { 0 } /* type_hash: see the _type_hash array */\n");
     out.push_str("};\n\n");
 
     // Getter function
@@ -160,62 +198,152 @@ pub fn generate_type_descriptor(s: &Struct) -> String {
     let _ = writeln!(out, "    return \"{type_name}\";");
     out.push_str("}\n\n");
 
-    // Has key function
+    // Has key function (a key member of a base type counts)
     let _ = writeln!(out, "static inline int {snake_name}_has_key(void) {{");
-    let _ = writeln!(out, "    return {};", i32::from(key_field_count > 0));
+    let _ = writeln!(out, "    return {};", i32::from(keys.is_keyed(s)));
     out.push_str("}\n\n");
 
-    // Compute key function (if there are @key fields)
-    let _ = writeln!(out, "/* Compute instance key hash for {type_name} */");
+    out.push_str(&compute_key_function(s, keys, &snake_name));
+    if keys.is_keyed(s) {
+        out.push_str(&writer_operations(s, &snake_name));
+    }
+    out
+}
+
+/// The C types of this backend: a base type is the `base` member, bounded
+/// strings are `char[N+1]` / `wchar_t[N+1]`, sequences are `{ data, len }`
+/// structs, a union keeps its discriminator in `_d` and its member in `_u`.
+struct CTypes<'a> {
+    idx: &'a TypeIndex,
+}
+
+impl super::key_hash::CFlavor for CTypes<'_> {
+    fn member(&self, parent: &str, base_depth: usize, name: &str) -> Option<String> {
+        let mut place = parent.to_string();
+        for _ in 0..base_depth {
+            place.push_str(".base");
+        }
+        Some(format!("{place}.{}", c_ident(name)))
+    }
+
+    fn string(&self, place: &str, bounded: bool, wide: bool) -> Option<String> {
+        Some(match (bounded, wide) {
+            (false, false) => format!("hdds_kh_string(w, {place});"),
+            (false, true) => format!("hdds_kh_wstring(w, {place});"),
+            (true, false) => format!(
+                "hdds_kh_string_n(w, {place}, hdds_kh_strnlen({place}, sizeof({place})));"
+            ),
+            (true, true) => format!(
+                "hdds_kh_wstring_n(w, {place}, hdds_kh_wcsnlen({place}, sizeof({place}) / sizeof(({place})[0])));"
+            ),
+        })
+    }
+
+    fn sequence(&self, place: &str, _bounded: bool, i: &str) -> (String, String) {
+        (format!("{place}.len"), format!("{place}.data[{i}]"))
+    }
+
+    fn union_disc(&self, place: &str) -> String {
+        format!("{place}._d")
+    }
+
+    fn union_member(&self, place: &str, _union_name: &str, name: &str) -> String {
+        format!("{place}._u.{}", c_ident(name))
+    }
+
+    fn label(&self, disc: &IdlType, label: &str) -> String {
+        super::xcdr2::label_value(self.idx, disc, label)
+            .map_or_else(|| label.to_string(), |v| v.to_string())
+    }
+}
+
+/// `<snake>_compute_key()`: the instance `KeyHash` of RTPS 2.5 9.6.4.8.
+fn compute_key_function(s: &Struct, keys: &TypeIndex, snake_name: &str) -> String {
+    compute_key_mode(s, keys, snake_name, false) + &compute_key_mode(s, keys, snake_name, true)
+}
+
+fn compute_key_mode(s: &Struct, keys: &TypeIndex, snake_name: &str, protected: bool) -> String {
+    let function = if protected {
+        "compute_protected_key"
+    } else {
+        "compute_key"
+    };
+    let type_name = &s.name;
+    let mut out = String::new();
+    if protected {
+        out.push_str("/* Protected KeyHash (DDS-Security 1.1 7.3.4): always MD5 of CDR big-endian\n * key fields, with natural alignment. Return codes are those of compute_key. */\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "/* Instance KeyHash of {type_name} (RTPS 2.5 9.6.4.8): the KeyHolder\n \
+         * serialized as PLAIN_CDR2 big endian, zero-padded to 16 bytes when its\n \
+         * maximum size is at most 16, its MD5 otherwise. Returns 1 (keyed), 0 (no\n \
+         * key: all zeros), -1 (NULL argument), -2 (a key hddsgen's KeyHash model\n \
+         * does not cover: all zeros). */"
+        );
+    }
     let _ = writeln!(
         out,
-        "static inline int {snake_name}_compute_key(const {type_name}* value, uint8_t key_hash[16]) {{"
+        "static inline int {snake_name}_{function}(const {type_name}* value, uint8_t key_hash[16]) {{"
     );
-    out.push_str("    if (!value || !key_hash) return -1;\n");
-
-    let key_fields: Vec<_> = s
-        .fields
-        .iter()
-        .filter(|f| f.annotations.iter().any(|a| matches!(a, Annotation::Key)))
-        .collect();
-
-    if key_fields.is_empty() {
-        out.push_str("    /* No @key fields - clear hash */\n");
-        out.push_str("    memset(key_hash, 0, 16);\n");
-        out.push_str("    return 0; /* No key */\n");
-    } else {
-        out.push_str("    /* FNV-1a hash of @key fields */\n");
-        out.push_str("    uint64_t hash = 14695981039346656037ULL;\n");
-        for field in &key_fields {
-            out.push_str("    {\n");
+    let holder = keys.key_holder(s);
+    let emitted = match &holder {
+        Ok(Some(kh)) => {
+            let flavor = CTypes { idx: keys };
+            let mut e = super::key_hash::Emit::new(&flavor);
+            e.structure(1, kh, "(*value)").map(|()| {
+                (
+                    e.declarations(),
+                    e.statements().to_string(),
+                    kh.is_padded_form(),
+                )
+            })
+        }
+        Ok(None) => Err(String::new()),
+        Err(reason) => Err(reason.clone()),
+    };
+    match (&holder, emitted) {
+        (_, Ok((decls, body, padded))) => {
+            out.push_str("    hdds_key_holder kh;\n    hdds_key_holder* w = &kh;\n");
+            if !decls.is_empty() {
+                let _ = writeln!(out, "    {decls}");
+            }
+            out.push_str("    if (!value || !key_hash) return -1;\n    hdds_kh_init(w);\n");
+            if protected {
+                out.push_str("    w->max_align = 8u;\n");
+            }
+            out.push_str(&body);
             let _ = writeln!(
                 out,
-                "        const uint8_t* ptr = (const uint8_t*)&value->{};",
-                field.name
+                "    hdds_kh_finish(w, {}, key_hash);",
+                i32::from(padded && !protected)
             );
-            let size = get_primitive_size(&field.field_type);
-            let _ = writeln!(out, "        for (size_t i = 0; i < {}; ++i) {{", size);
-            out.push_str("            hash ^= ptr[i];\n");
-            out.push_str("            hash *= 1099511628211ULL;\n");
-            out.push_str("        }\n");
-            out.push_str("    }\n");
+            out.push_str("    return 1;\n");
         }
-        out.push_str("    /* Expand to 16 bytes */\n");
-        out.push_str("    memset(key_hash, 0, 16);\n");
-        out.push_str("    memcpy(key_hash, &hash, sizeof(hash));\n");
-        out.push_str("    hash *= 1099511628211ULL;\n");
-        out.push_str("    memcpy(key_hash + 8, &hash, sizeof(hash));\n");
-        out.push_str("    return 1; /* Has key */\n");
+        (Ok(None), Err(_)) => {
+            out.push_str("    if (!value || !key_hash) return -1;\n");
+            out.push_str("    memset(key_hash, 0, 16);\n    return 0;\n");
+        }
+        (_, Err(reason)) => {
+            let reason = reason.replace(['\n', '\r'], " ").replace("*/", "* /");
+            let _ = writeln!(
+                out,
+                "    /* No KeyHolder generated: the key of this type is not covered by\n     \
+                 * hddsgen's KeyHash model ({reason}). */"
+            );
+            out.push_str("    if (!value || !key_hash) return -1;\n");
+            out.push_str("    memset(key_hash, 0, 16);\n    return -2;\n");
+        }
     }
     out.push_str("}\n\n");
-
     out
 }
 
 /// Get the type kind enum value as a string
 const fn get_type_kind(t: &IdlType) -> &'static str {
     match t {
-        IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) => "CDR_TYPE_STRING",
+        IdlType::BoundedString { .. }
+        | IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) => "CDR_TYPE_STRING",
         IdlType::Primitive(_) => "CDR_TYPE_PRIMITIVE",
         IdlType::Sequence { .. } => "CDR_TYPE_SEQUENCE",
         IdlType::Array { .. } => "CDR_TYPE_ARRAY",
@@ -224,45 +352,16 @@ const fn get_type_kind(t: &IdlType) -> &'static str {
     }
 }
 
-/// Get size of a primitive type for key hashing
-const fn get_primitive_size(t: &IdlType) -> &'static str {
-    match t {
-        IdlType::Primitive(p) => match p {
-            PrimitiveType::Boolean
-            | PrimitiveType::Char
-            | PrimitiveType::Octet
-            | PrimitiveType::Int8
-            | PrimitiveType::UInt8 => "1",
-            PrimitiveType::Short
-            | PrimitiveType::Int16
-            | PrimitiveType::UnsignedShort
-            | PrimitiveType::UInt16 => "2",
-            PrimitiveType::Long
-            | PrimitiveType::Int32
-            | PrimitiveType::UnsignedLong
-            | PrimitiveType::UInt32
-            | PrimitiveType::Float
-            | PrimitiveType::WChar => "4",
-            PrimitiveType::LongLong
-            | PrimitiveType::Int64
-            | PrimitiveType::UnsignedLongLong
-            | PrimitiveType::UInt64
-            | PrimitiveType::Double
-            | PrimitiveType::LongDouble => "8",
-            PrimitiveType::Fixed { .. } => "16",
-            PrimitiveType::String | PrimitiveType::WString => "sizeof(void*)",
-            PrimitiveType::Void => "0",
-        },
-        _ => "sizeof(void*)", // For complex types
-    }
-}
-
 /// Compute a type hash based on type structure (FNV-1a)
-fn compute_type_hash(s: &Struct) -> [u8; 16] {
+fn compute_type_hash(
+    s: &Struct,
+    type_name: &str,
+    idl_names: &std::collections::HashMap<String, String>,
+) -> [u8; 16] {
     let mut hash: u64 = 14_695_981_039_346_656_037;
 
     // Hash the type name
-    for byte in s.name.as_bytes() {
+    for byte in type_name.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
@@ -275,7 +374,7 @@ fn compute_type_hash(s: &Struct) -> [u8; 16] {
             hash = hash.wrapping_mul(1_099_511_628_211);
         }
         // Field type
-        for byte in field.field_type.to_idl_string().as_bytes() {
+        for byte in super::scoping::idl_string(&field.field_type, idl_names).as_bytes() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(1_099_511_628_211);
         }
@@ -294,6 +393,102 @@ fn compute_type_hash(s: &Struct) -> [u8; 16] {
     hash = hash.wrapping_mul(1_099_511_628_211);
     result[8..16].copy_from_slice(&hash.to_le_bytes());
     result
+}
+
+/// Typed operations use the codec's key payload and both specified hashes.
+fn writer_operations(s: &Struct, hash_prefix: &str) -> String {
+    let ty = &s.name;
+    let f = super::helpers::c_name(ty);
+    let mut out = format!(
+        r"#ifdef HDDS_H
+#include <stdlib.h>
+/* Include hdds.h before this header to enable the typed writer operations. */
+static inline HddsError {f}__instance_operation(struct HddsDataWriter* writer, const {ty}* value,
+                                               unsigned operation, uint64_t timestamp, HddsInstanceHandle* handle) {{
+    size_t capacity;
+    uint8_t *data, *key_bytes;
+    int len, key_len;
+    HddsError result;
+    HddsSerializedKey key;
+    if (!writer || !value) return HDDS_INVALID_ARGUMENT;
+    capacity = operation <= 1 ? {f}_max_cdr2_size(value) : {f}_max_key_cdr2_size(value);
+    if (capacity == 0) capacity = 1;
+    data = operation <= 1 ? (uint8_t*)malloc(capacity) : NULL;
+    key_bytes = (uint8_t*)malloc(capacity);
+    if ((operation <= 1 && !data) || !key_bytes) {{ free(data); free(key_bytes); return HDDS_OUT_OF_MEMORY; }}
+    len = operation <= 1 ? {f}_encode_cdr2_le(value, data, capacity) : 0;
+    key_len = {f}_encode_key_cdr2_le(value, key_bytes, capacity);
+    if (len < 0 || key_len < 0 || {hash_prefix}_compute_key(value, key.HASH) != 1 ||
+        {hash_prefix}_compute_protected_key(value, key.PROTECTED_HASH) != 1) {{
+        free(data); free(key_bytes); return HDDS_INVALID_ARGUMENT;
+    }}
+    key.PAYLOAD = key_bytes; key.PAYLOAD_LEN = (size_t)key_len; key.REPRESENTATION = 2;
+    switch (operation) {{
+"
+    );
+    for (i, op) in [
+        "write",
+        "write_w_timestamp",
+        "dispose",
+        "dispose_w_timestamp",
+        "unregister_instance",
+        "unregister_instance_w_timestamp",
+        "register_instance",
+        "register_instance_w_timestamp",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let ts = if op.ends_with("_w_timestamp") {
+            ", timestamp"
+        } else {
+            ""
+        };
+        let handle = if op.starts_with("register_instance") {
+            ", handle"
+        } else {
+            ""
+        };
+        let _ = writeln!(out, "    case {i}: result = hdds_writer_{op}_keyed(writer, data, (size_t)len, &key{ts}{handle}); break;");
+    }
+    out.push_str("    default: result = HDDS_INVALID_ARGUMENT; break;\n    }\n    free(data); free(key_bytes); return result;\n}\n");
+    for (i, op) in [
+        "write",
+        "write_w_timestamp",
+        "dispose",
+        "dispose_w_timestamp",
+        "unregister_instance",
+        "unregister_instance_w_timestamp",
+        "register_instance",
+        "register_instance_w_timestamp",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let ts = op.ends_with("_w_timestamp");
+        let reg = op.starts_with("register_instance");
+        let ts_param = if ts { ", uint64_t timestamp" } else { "" };
+        let handle_param = if reg {
+            ", HddsInstanceHandle* handle"
+        } else {
+            ""
+        };
+        let timestamp = if ts { "timestamp" } else { "0" };
+        let handle = if reg { "handle" } else { "NULL" };
+        let _ = writeln!(out, "static inline HddsError {f}_{op}(struct HddsDataWriter* writer, const {ty}* value{ts_param}{handle_param}) {{\n    return {f}__instance_operation(writer, value, {i}, {timestamp}, {handle});\n}}");
+    }
+    out.push_str("#endif\n\n");
+    out
+}
+
+/// Union instance operations use its keyed discriminator, not its selected case.
+pub(super) fn union_key_operations(u: &crate::ast::Union, keys: &TypeIndex) -> String {
+    if !u.discriminator_is_key() {
+        return String::new();
+    }
+    let holder = crate::codegen::data_model::discriminator_holder(u, "_d");
+    let prefix = super::helpers::c_name(&u.name);
+    compute_key_function(&holder, keys, &prefix) + &writer_operations(&holder, &prefix)
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@
 use super::super::diagnostics::{Level, ValidationDiag};
 use super::helpers::{
     enforce_extensibility_conflicts, validate_custom_annotations, validate_field_annotations,
-    validate_type_usage,
+    validate_type_usage, validate_unique_member_names,
 };
 use crate::ast::{AnnotationDecl, Struct};
 use crate::types::{Annotation, AutoIdKind, IdlType};
@@ -29,6 +29,11 @@ pub(crate) fn validate_struct(
         diags,
     );
     enforce_extensibility_conflicts(&s.annotations, &format!("struct {}", s.name), diags);
+    validate_unique_member_names(
+        &format!("struct {}", s.name),
+        s.fields.iter().map(|f| f.name.as_str()),
+        diags,
+    );
 
     let mut seen_ids: HashSet<u32> = HashSet::new();
     let mut explicit_ids_in_order: Vec<(usize, u32)> = Vec::new();

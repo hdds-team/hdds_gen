@@ -26,11 +26,7 @@ pub fn c_name(name: &str) -> String {
         .replace('.', "_")
 }
 
-#[must_use]
-pub fn last_ident_owned(name: &str) -> String {
-    last_ident(name).to_string()
-}
-
+/// Append formatted text to `dst`.
 pub fn push_fmt(dst: &mut String, args: std::fmt::Arguments<'_>) {
     let _ = dst.write_fmt(args);
 }

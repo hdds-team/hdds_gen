@@ -60,19 +60,24 @@ fn mutable_optional_poly3d_contains_member_ids_and_option() {
         "altitude should be optional"
     );
 
-    // MemberIds (autoid hash with FNV-1a 32-bit & 0x0FFF_FFFF)
+    // Member ids under @autoid (HASH): the first four bytes of the MD5 of
+    // the name, little endian, masked to 28 bits (XTypes 1.3 7.3.1.2.1.1).
     assert!(
-        code.contains("0x0C9567C6"),
-        "points MemberId should be present"
+        code.contains("__e.emheader(false, 5, 0xe81ab0a)?;"),
+        "points: MD5 member id, LC 5 (a sequence of structures has a DHEADER)"
     );
     assert!(
-        code.contains("0x027D2AF7"),
-        "altitude MemberId should be present"
+        code.contains("__e.emheader(false, 3, 0x93d814)?;"),
+        "altitude: MD5 member id, LC 3 (8 bytes)"
+    );
+    assert!(
+        code.contains("struct_flags: ::hdds::xtypes::StructTypeFlag(0x0014)"),
+        "TypeObject: IS_MUTABLE | IS_AUTOID_HASH"
     );
 
-    // PL_CDR2 framing (delimiter length)
+    // PL_CDR2 framing: a DHEADER patched with the member bytes.
     assert!(
-        code.contains("let payload_len = u32::try_from(offset - 4)"),
+        code.contains("let __dh = __e.begin_len()?;") && code.contains("__e.end_len(__dh)?;"),
         "should compute delimiter length"
     );
 }
@@ -109,22 +114,28 @@ fn must_understand_bit_set_in_emheader() {
 
     let code = fs::read_to_string(&out_rs).expect("read generated");
 
-    // @key fields are implicitly must_understand -> M bit (0x8000_0000) must be set
+    // @key and @must_understand members carry the M flag of EMHEADER1.
     assert!(
-        code.contains("0x8000_0000"),
-        "must_understand bit should be present in generated code for @key or @must_understand fields"
+        code.contains("__e.emheader(true, 2, 0x4b70bb8)?;"),
+        "@key id: M flag"
+    );
+    assert!(
+        code.contains("__e.emheader(true, 3, 0xd557b69)?;"),
+        "@must_understand critical_value: M flag"
+    );
+    assert!(
+        code.contains("__e.emheader(false, 2, 0x22fe000)?;"),
+        "normal_value: no M flag"
     );
 
-    // Unknown member handling: must check must_understand flag before rejecting
+    // Unknown member handling: rejected with the M flag, skipped without.
     assert!(
-        code.contains("must_understand"),
+        code.contains("_ => { if __mu { return Err(::hdds::CdrError::InvalidEncoding); } }"),
         "decoder should check must_understand flag for unknown members"
     );
-
-    // Unknown member handling: should skip if not must_understand
     assert!(
-        code.contains("offset = member_end"),
-        "decoder should skip unknown non-must_understand members"
+        code.contains("__d.skip_to(__end)?;"),
+        "decoder should skip to the member end"
     );
 }
 
@@ -161,13 +172,14 @@ fn unknown_member_skip_without_must_understand() {
 
     // Non-@key, non-@must_understand field should NOT have M bit
     assert!(
-        !code.contains("0x8000_0000"),
+        !code.contains("__e.emheader(true"),
         "normal field should not have must_understand bit set"
     );
 
-    // member_len should use LC-based sizes, not fallback
+    // The member length follows the length code (XTypes 1.3 7.4.3.4.2).
     assert!(
-        code.contains("match lc { 0 => 1, 1 => 2, 2 => 4, 3 => 8,"),
-        "decoder should compute member_len from LC code"
+        code.contains("let size = match (h >> 28) & 7 {")
+            && code.contains("let unit = match lc { 5 => 1, 6 => 4, _ => 8 };"),
+        "decoder should compute the member length from the length code"
     );
 }

@@ -5,9 +5,10 @@
 //!
 //! Emits the `Fixed<D, S>` struct template for IDL fixed types.
 
-use super::RustGenerator;
+use super::{push_fmt, RustGenerator};
 
 impl RustGenerator {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn emit_fixed_support(output: &mut String) {
         output.push_str("// Fixed-point decimal with const generics (digits, scale)\n");
         output.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n");
@@ -47,20 +48,27 @@ impl RustGenerator {
         // carries const generics that helper does not format).
         for (suffix, _version) in [("xcdr1", "Xcdr1"), ("xcdr2", "Xcdr2")] {
             output.push_str("impl<const D: u32, const S: u32> Fixed<D, S> {\n");
-            output.push_str(&format!(
-                "    pub fn encode_{suffix}_le(&self, dst: &mut [u8]) -> Result<usize, CdrError> {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!(
+                    "    pub fn encode_{suffix}_le(&self, dst: &mut [u8]) -> Result<usize, CdrError> {{\n"
+                ),
+            );
             output
                 .push_str("        if dst.len() < 16 { return Err(CdrError::BufferTooSmall); }\n");
             output.push_str("        dst[..16].copy_from_slice(&self.raw().to_le_bytes());\n");
             output.push_str("        Ok(16)\n");
             output.push_str("    }\n");
-            output.push_str(&format!(
-                "    pub fn max_{suffix}_size(&self) -> usize {{ 16 }}\n"
-            ));
-            output.push_str(&format!(
-                "    pub fn decode_{suffix}_le(src: &[u8]) -> Result<(Self, usize), CdrError> {{\n"
-            ));
+            push_fmt(
+                output,
+                format_args!("    pub fn max_{suffix}_size(&self) -> usize {{ 16 }}\n"),
+            );
+            push_fmt(
+                output,
+                format_args!(
+                    "    pub fn decode_{suffix}_le(src: &[u8]) -> Result<(Self, usize), CdrError> {{\n"
+                ),
+            );
             output.push_str("        if src.len() < 16 { return Err(CdrError::UnexpectedEof); }\n");
             output.push_str(
                 "        let raw = {\n            let mut __hdds_tmp = [0u8; 16];\n            __hdds_tmp.copy_from_slice(&src[..16]);\n            i128::from_le_bytes(__hdds_tmp)\n        };\n",
@@ -73,21 +81,31 @@ impl RustGenerator {
             // inlined here because Fixed<D, S> carries const generics that the
             // shared helper signatures do not format. Keep in sync with the
             // shared helpers.
-            output.push_str(&format!(
-                "    pub fn encode_{suffix}_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {{\n"
-            ));
-            output.push_str(&format!(
-                "        let len = self.encode_{suffix}_le(&mut dst[*offset..])?;\n"
-            ));
+            push_fmt(
+                output,
+                format_args!(
+                    "    pub fn encode_{suffix}_le_at(\n        &self,\n        dst: &mut [u8],\n        offset: &mut usize,\n    ) -> Result<(), CdrError> {{\n"
+                ),
+            );
+            push_fmt(
+                output,
+                format_args!("        let len = self.encode_{suffix}_le(&mut dst[*offset..])?;\n"),
+            );
             output.push_str("        *offset += len;\n");
             output.push_str("        Ok(())\n");
             output.push_str("    }\n");
-            output.push_str(&format!(
-                "    pub fn decode_{suffix}_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {{\n"
-            ));
-            output.push_str(&format!(
-                "        let (value, used) = Self::decode_{suffix}_le(&src[*offset..])?;\n"
-            ));
+            push_fmt(
+                output,
+                format_args!(
+                    "    pub fn decode_{suffix}_le_at(\n        src: &[u8],\n        offset: &mut usize,\n    ) -> Result<Self, CdrError> {{\n"
+                ),
+            );
+            push_fmt(
+                output,
+                format_args!(
+                    "        let (value, used) = Self::decode_{suffix}_le(&src[*offset..])?;\n"
+                ),
+            );
             output.push_str("        *offset += used;\n");
             output.push_str("        Ok(value)\n");
             output.push_str("    }\n");

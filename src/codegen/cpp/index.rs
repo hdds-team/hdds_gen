@@ -6,11 +6,9 @@
 //! Indexes all type definitions in the AST for lookup during code generation.
 
 use crate::ast::{Bitmask, Bitset, Definition, Enum, IdlFile, Struct, Typedef, Union};
-use crate::types::{IdlType, PrimitiveType};
 use std::collections::HashMap;
 
-use super::helpers::last_ident;
-
+/// The definitions of an IDL file by name, for lookups while emitting C++.
 pub struct DefinitionIndex<'a> {
     pub structs: HashMap<String, &'a Struct>,
     pub enums: HashMap<String, &'a Enum>,
@@ -18,6 +16,9 @@ pub struct DefinitionIndex<'a> {
     pub unions: HashMap<String, &'a Union>,
     pub bitsets: HashMap<String, &'a Bitset>,
     pub bitmasks: HashMap<String, &'a Bitmask>,
+    /// Every named type, dependencies included, for the `KeyHolder` of keyed
+    /// types.
+    pub keys: crate::codegen::key_holder::TypeIndex,
 }
 
 impl<'a> DefinitionIndex<'a> {
@@ -30,12 +31,41 @@ impl<'a> DefinitionIndex<'a> {
             unions: HashMap::new(),
             bitsets: HashMap::new(),
             bitmasks: HashMap::new(),
+            keys: crate::codegen::key_holder::TypeIndex::default(),
         }
+    }
+
+    /// The enumerator names of the enumeration `name` names (absolute,
+    /// qualified or unique: the AST went through `scope::for_codegen`).
+    #[must_use]
+    pub fn enum_variants(&self, name: &str) -> Option<Vec<String>> {
+        match self.keys.named(name) {
+            Some(crate::codegen::key_holder::Named::Enum { literals, .. }) => {
+                Some(literals.iter().map(|(n, _)| n.clone()).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `name` names a structure.
+    #[must_use]
+    pub fn is_struct(&self, name: &str) -> bool {
+        self.keys.struct_def(name).is_some()
+    }
+
+    /// Whether a struct of this index has a `KeyHolder` the model covers.
+    #[must_use]
+    pub fn has_key_holder(&self) -> bool {
+        self.structs
+            .values()
+            .any(|s| matches!(self.keys.key_holder(s), Ok(Some(_))))
+            || self.unions.values().any(|u| u.discriminator_is_key())
     }
 
     #[must_use]
     pub fn from_file(file: &'a IdlFile) -> (Self, Vec<&'a Definition>) {
         let mut index = Self::new();
+        index.keys.add_file(file);
         let mut flat = Vec::new();
         index.collect(&file.definitions, &mut flat);
         (index, flat)
@@ -48,6 +78,7 @@ impl<'a> DefinitionIndex<'a> {
     pub fn index_deps(&mut self, dep_files: &'a [IdlFile]) {
         let mut discarded = Vec::new();
         for dep in dep_files {
+            self.keys.add_file(dep);
             self.collect(&dep.definitions, &mut discarded);
         }
     }
@@ -81,60 +112,6 @@ impl<'a> DefinitionIndex<'a> {
                     flat.push(def);
                 }
                 _ => {}
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn align_of(&self, ty: &IdlType) -> usize {
-        match ty {
-            IdlType::Primitive(p) => match p {
-                PrimitiveType::Octet
-                | PrimitiveType::UInt8
-                | PrimitiveType::Int8
-                | PrimitiveType::Boolean
-                | PrimitiveType::Char => 1,
-                PrimitiveType::Short
-                | PrimitiveType::Int16
-                | PrimitiveType::UnsignedShort
-                | PrimitiveType::UInt16 => 2,
-                PrimitiveType::Long
-                | PrimitiveType::Int32
-                | PrimitiveType::UnsignedLong
-                | PrimitiveType::UInt32
-                | PrimitiveType::Float
-                | PrimitiveType::WChar
-                | PrimitiveType::String
-                | PrimitiveType::WString
-                | PrimitiveType::Void
-                | PrimitiveType::Fixed { .. } => 4,
-                // XCDR2 §7.4.3.4.1 Tab.15: 8-byte primitives align on 4 (cap-4),
-                // not 8. Used by `encode_array` to pre-align before the loop;
-                // mismatched value here would make `array<double>` /
-                // `array<int64>` re-introduce the F01 alignment bug through
-                // a different code path than `primitive_scalar_layout`.
-                PrimitiveType::LongLong
-                | PrimitiveType::Int64
-                | PrimitiveType::UnsignedLongLong
-                | PrimitiveType::UInt64
-                | PrimitiveType::Double
-                | PrimitiveType::LongDouble => 4,
-            },
-            IdlType::Sequence { .. } | IdlType::Map { .. } => 4,
-            IdlType::Array { inner, .. } => self.align_of(inner),
-            IdlType::Named(nm) => {
-                let ident = last_ident(nm);
-                if self.enums.contains_key(ident)
-                    || self.structs.contains_key(ident)
-                    || self.bitsets.contains_key(ident)
-                    || self.bitmasks.contains_key(ident)
-                {
-                    4
-                } else if let Some(td) = self.typedefs.get(ident) {
-                    self.align_of(&td.base_type)
-                } else {
-                    4
-                }
             }
         }
     }

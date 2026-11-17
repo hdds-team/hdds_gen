@@ -1,0 +1,13 @@
+# @mutable @autoid(HASH) union (rules 27-28, member ids by MD5 name hash,
+# DDS-XTypes 1.3 7.3.1.2.1.1 lines 3866-3873), built by spec_vectors.py from
+# the specification text for p=1 and color=0x11 / shapesize=0x22:
+#   @mutable @autoid(HASH) union UMh switch (long) { case 1: long color; case 2: short shapesize; };
+#   @final struct HoldUMh { octet p; UMh u; };
+# Case ids: 0x0FA5DD70 (color) and 0x047790DA (shapesize), the spec's
+# Example 2 values. `spec=` and `alt=` as in spec_mutable_union.txt; a hashed
+# case id is above 0x3F00, so its XCDR1 header is extended in both forms.
+#
+HoldUMh_1 xcdr1 alt=00010000010000000000040001000000017f080070dda50f0400000011000000027f0000 spec=0001000001000000017f0800000000400400000001000000017f080070dda50f0400000011000000027f0000
+HoldUMh_1 xcdr2 alt=000700000100000010000000000000200100000070dda52f11000000 spec=000700000100000010000000000000a00100000070dda52f11000000
+HoldUMh_2 xcdr1 alt=00010000010000000000040002000000017f0800da9077040200000022000000027f0000 spec=0001000001000000017f0800000000400400000002000000017f0800da9077040200000022000000027f0000
+HoldUMh_2 xcdr2 alt=00070000010000000e0000000000002002000000da9077142200 spec=00070000010000000e000000000000a002000000da9077142200

@@ -11,6 +11,7 @@ use super::helpers::{cpp_default_init, push_fmt, type_to_cpp};
 use super::index::DefinitionIndex;
 use super::CppGenerator;
 use crate::ast::Struct;
+use crate::codegen::key_holder::Named;
 use crate::types::IdlType;
 
 #[allow(clippy::too_many_lines)] // Full struct + codec generation
@@ -32,6 +33,12 @@ pub(super) fn generate_struct(
     } else {
         push_fmt(&mut output, format_args!("{indent}struct {name} {{\n"));
     }
+
+    output.push_str(&super::key_hash::instance_key_methods(
+        s,
+        idx,
+        generator.fastdds_compat,
+    ));
 
     if generator.fastdds_compat {
         // FastDDS-compatible mode: private members with m_ prefix, public getter/setter methods
@@ -99,10 +106,12 @@ pub(super) fn generate_struct(
             s,
             idx,
             &member_indent,
+            &generator.type_name(&s.name),
         ));
 
         // Private section with actual member storage
-        push_fmt(&mut output, format_args!("\n{indent}private:\n"));
+        // `protected`: a derived structure serializes its base members.
+        push_fmt(&mut output, format_args!("\n{indent}protected:\n"));
         for field in &s.fields {
             let base_type = type_to_cpp(&field.field_type);
             let field_type = if field.is_optional() {
@@ -111,9 +120,14 @@ pub(super) fn generate_struct(
                 base_type
             };
             let fname = cpp_ident(&field.name);
+            let init = if field.is_optional() {
+                String::new()
+            } else {
+                enum_default_init(idx, &field.field_type).unwrap_or_default()
+            };
             push_fmt(
                 &mut output,
-                format_args!("{member_indent}{field_type} m_{fname};\n"),
+                format_args!("{member_indent}{field_type} m_{fname}{init};\n"),
             );
         }
     } else {
@@ -128,9 +142,10 @@ pub(super) fn generate_struct(
             let idl_type = field.field_type.to_idl_string();
             let fname = cpp_ident(&field.name);
             let default_init = if field.is_optional() {
-                ""
+                String::new()
             } else {
-                cpp_default_init(&field.field_type)
+                enum_default_init(idx, &field.field_type)
+                    .unwrap_or_else(|| cpp_default_init(&field.field_type).to_string())
             };
             let needs_comment = matches!(
                 field.field_type,
@@ -198,13 +213,38 @@ pub(super) fn generate_struct(
         output.push('\n');
 
         // Generate CDR2 encode/decode methods
-        output.push_str(&codec::generate_struct_codec(s, idx, &member_indent));
+        output.push_str(&codec::generate_struct_codec(
+            s,
+            idx,
+            &member_indent,
+            &generator.type_name(&s.name),
+        ));
     }
 
     push_fmt(&mut output, format_args!("{indent}}};\n\n"));
 
     // Generate PubSubType class for the struct
-    output.push_str(&codec::pubsub_types::generate_pubsub_type_header(s));
+    output.push_str(&codec::pubsub_types::generate_pubsub_type_header(
+        s,
+        idx,
+        generator.fastdds_compat,
+        &generator.type_name(&s.name),
+    ));
 
     output
+}
+
+/// ` = <first enumerator>` for a member of an enumeration type (through
+/// typedefs): its default value (DDS-XTypes 1.3 Table 9, spec text line
+/// 2341), as the decoder gives a member absent from the data.
+fn enum_default_init(idx: &DefinitionIndex, ty: &IdlType) -> Option<String> {
+    let IdlType::Named(n) = idx.keys.resolve(ty) else {
+        return None;
+    };
+    match idx.keys.named(&n) {
+        Some(Named::Enum { literals, .. }) => literals
+            .first()
+            .map(|(_, v)| format!(" = static_cast<{}>({v})", type_to_cpp(ty))),
+        _ => None,
+    }
 }

@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Copyright (c) 2025-2026 naskel.com
+
+enum Priority {
+    LOW,
+    NORMAL,
+    HIGH = 10,
+    CRITICAL
+};
+
+enum Verbosity {
+    QUIET    = -2,
+    TERSE,
+    CHATTY,
+    SHOUTING = 10,
+    DEAFENING
+};
+
+enum Phase {
+    START,
+    MIDDLE  = 5,
+    LATE,
+    RESTART = 2,
+    AGAIN
+};
+
+@bit_bound(8)
+enum Small {
+    S0,
+    S1 = 100,
+    S2
+};
+
+struct Alert {
+    Priority  priority;
+    Verbosity verbosity;
+    Phase     phase;
+    Small     small;
+};
+
+

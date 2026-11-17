@@ -1,0 +1,140 @@
+// Round-trip corpus for the parser / printer: every construct below once
+// came back from the printer as different (or invalid) IDL, or was refused.
+// Written for this test; the module and type names imitate the shape of a
+// vehicle platform data model, no content is taken from one.
+
+struct Position {
+    double latitude, longitude, altitude;
+};
+
+module Common {
+    enum Mode { MODE_OFF, MODE_STANDBY, MODE_ACTIVE };
+    enum Health { HEALTH_OK, HEALTH_DEGRADED };
+    typedef string<32> Label, LabelPair[2];
+    typedef long Grid[2][3], Cell;
+    struct Position {
+        float x, y;
+    };
+    const long MAX_TRACKS = 8;
+};
+
+module Platform {
+    module Sensor {
+        // Multiple declarators, array declarators per name.
+        @topic
+        @appendable
+        struct Track {
+            @key unsigned long track_id, source_id;
+            float bearing, range, elevation;
+            long history[4], count;
+            long matrix[2][3], trace;
+            Common::Label name;
+            ::Position where;
+            Position local;
+            sequence<Common::Position, Common::MAX_TRACKS> path;
+        };
+
+        @topic(name = "SensorStatus", platform = "vehicle \"A\"\\1")
+        struct Status {
+            @key unsigned long sensor_id;
+            Common::Mode mode;
+            Common::Health health;
+        };
+
+        // Scoped case labels, one of them absolute, from another module.
+        union Reading switch (Common::Mode) {
+            case Common::MODE_OFF: @unit("s") long off_code;
+            case ::Common::MODE_STANDBY:
+            case Common::MODE_ACTIVE: float level;
+        };
+
+        // Custom annotations with every literal kind.
+        @note(text = "x y, z", level = 3, scale = -1.5, enabled = TRUE, kind = Common::MODE_OFF)
+        struct Annotated {
+            @unit("m/s") float speed;
+            @range(min = 0, max = 100) long percent;
+            @label("a \"quoted\" \\ word") long tagged;
+            @default(-2) long offset;
+            @min(-1.5) @max(2.5) float clamp;
+            @default("hello, world") string greeting;
+            @default('q') char letter;
+        };
+
+        @verbatim(language = "c", placement = BEGIN_FILE, text = "/* generated */")
+        struct WithVerbatim {
+            long v;
+        };
+
+        bitset Flags {
+            bitfield<3> low, mid;
+            bitfield<2> high;
+        };
+    };
+};
+
+// Escaped identifiers (IDL 4.2 7.2.3.2): the underscore is not part of the
+// name, so each of these is an IDL keyword used as a name. Member names are
+// also keywords of the target languages (each backend escapes those); type
+// names stay clear of them (see escaped_type_names.idl).
+module _module {
+    enum _sequence { _octet, _string };
+    struct _map {
+        long _struct;
+        string _switch;
+        @default(_octet) _sequence _union;
+        long _case, _default[2];
+    };
+};
+
+// Absolute and relative names that resolve to different types.
+struct Base { long b; };
+module Scope {
+    struct Base { short s; };
+    struct Derived : ::Base { long d; };
+    struct Uses {
+        ::Base absolute;
+        Base relative;
+        Scope::Base qualified;
+    };
+};
+
+// Constants of every literal kind, scoped constants, a constant as a case
+// label, a forward-declared union, an enumerator default.
+const double SCALE = 1.5e3;
+const char NEWLINE = '\n';
+const wchar WIDE_C = L'x';
+const wstring WIDE_S = L"wide";
+const string QUOTED = "a \"q\" \\ b";
+const boolean ENABLED = TRUE;
+const long MAX = 4;
+const long delete = 5; // a C++ keyword, not an IDL one
+module Limits {
+    const long MAX = 8;
+    const long OUTER = ::MAX * 2;
+    struct Sized {
+        long outer[::MAX];
+        long inner[MAX];
+        long both[OUTER];
+    };
+    enum Color { RED, BLUE };
+    struct Painted {
+        @default(BLUE) Color color;
+    };
+};
+union Choice;
+union Choice switch (long) {
+    case MAX: long four;
+    case 7: short seven;
+};
+struct Sized {
+    long root[MAX];
+};
+
+// A module reopened after another one that uses it, using that one in
+// turn: declarations keep their order (C and C++ need it).
+module Common {
+    struct Later {
+        Scope::Uses uses;
+        Position here;
+    };
+};

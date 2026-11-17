@@ -221,17 +221,14 @@ fn c_optional() {
         out.contains("uint8_t has_maybe;"),
         "missing has_maybe flag in struct: {out}"
     );
+    // XTypes 1.3 7.4.3.5.3 rule 20: a presence byte, then the value.
     assert!(
-        out.contains("has_maybe ? 0x01 : 0x00"),
+        out.contains("hdds_x2c_w8(c, (uint8_t)(v->has_maybe ? 1 : 0))"),
         "missing presence flag encode: {out}"
     );
     assert!(
-        out.contains("has_maybe = (src[offset++] != 0)"),
+        out.contains("v->has_maybe = hx_t"),
         "missing presence flag decode: {out}"
-    );
-    assert!(
-        out.contains("offset += 1;"),
-        "missing presence flag in max_size: {out}"
     );
 }
 
@@ -407,12 +404,12 @@ fn c_escapes_register_field() {
 }
 
 // ---------------------------------------------------------------------------
-// @key annotation codegen
+// @key annotation codegen: the KeyHolder writes of RTPS 2.5 9.6.4.8
 // Covers: typedef string, nested struct, enum, bool, char, Fixed
 // ---------------------------------------------------------------------------
 
 #[test]
-fn rust_key_typedef_string_uses_as_bytes() {
+fn rust_key_typedef_string_writes_a_string() {
     let idl = r#"
         typedef string my_string;
         @extensibility(APPENDABLE)
@@ -422,17 +419,17 @@ fn rust_key_typedef_string_uses_as_bytes() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains("self.message.to_le_bytes()"),
-        "typedef string @key field must not use to_le_bytes: {out}"
+        out.contains("w.write_string(&self.message);"),
+        "typedef string @key field must be written as a string: {out}"
     );
     assert!(
-        out.contains("self.message.encode_cdr2_le") || out.contains("self.message.as_bytes"),
-        "typedef string @key field must use CDR2 or as_bytes: {out}"
+        out.contains("KeyMaxSize::Unbounded"),
+        "an unbounded string key makes the KeyHash an MD5: {out}"
     );
 }
 
 #[test]
-fn rust_key_nested_struct_uses_cdr2() {
+fn rust_key_nested_struct_writes_its_members() {
     let idl = r#"
         struct Inner { uint32 index; };
         @extensibility(APPENDABLE)
@@ -442,17 +439,13 @@ fn rust_key_nested_struct_uses_cdr2() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains(".message.to_le_bytes()"),
-        "struct @key field must not use to_le_bytes: {out}"
-    );
-    assert!(
-        out.contains("encode_cdr2_le"),
-        "struct @key field must use CDR2 serialization: {out}"
+        out.contains("w.write_u32(self.message.index);"),
+        "a nested struct without keys contributes all its members: {out}"
     );
 }
 
 #[test]
-fn rust_key_enum_uses_u32_cast() {
+fn rust_key_enum_is_written_at_its_bit_bound() {
     let idl = r#"
         enum Color { RED, GREEN, BLUE };
         @extensibility(APPENDABLE)
@@ -463,17 +456,17 @@ fn rust_key_enum_uses_u32_cast() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains("self.color.to_le_bytes()"),
-        "enum @key field must not call to_le_bytes directly: {out}"
+        out.contains("w.write_i32(self.color as i32);"),
+        "an enum with the default bit_bound is an int32: {out}"
     );
     assert!(
-        out.contains("self.color as u32"),
-        "enum @key field must cast to u32: {out}"
+        !out.contains("self.value)"),
+        "non-key member written: {out}"
     );
 }
 
 #[test]
-fn rust_key_bool_uses_u8_cast() {
+fn rust_key_bool_is_one_byte() {
     let idl = r#"
         @extensibility(APPENDABLE)
         struct Flags {
@@ -482,17 +475,14 @@ fn rust_key_bool_uses_u8_cast() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains("self.active.to_le_bytes()"),
-        "bool @key field must not call to_le_bytes directly: {out}"
+        out.contains("w.write_bool(self.active);"),
+        "bool @key field must be written as a boolean: {out}"
     );
-    assert!(
-        out.contains("self.active as u8"),
-        "bool @key field must cast to u8: {out}"
-    );
+    assert!(out.contains("KeyMaxSize::Bounded(1)"), "{out}");
 }
 
 #[test]
-fn rust_key_char_uses_u32_cast() {
+fn rust_key_char_is_one_byte() {
     let idl = r#"
         @extensibility(APPENDABLE)
         struct Token {
@@ -501,17 +491,13 @@ fn rust_key_char_uses_u32_cast() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains("self.symbol.to_le_bytes()"),
-        "char @key field must not call to_le_bytes directly: {out}"
-    );
-    assert!(
-        out.contains("self.symbol as u32"),
-        "char @key field must cast to u32: {out}"
+        out.contains("w.write_u8(self.symbol as u8);"),
+        "an IDL char is one byte: {out}"
     );
 }
 
 #[test]
-fn rust_key_fixed_uses_cdr2() {
+fn rust_key_fixed_is_not_covered() {
     let idl = r#"
         @extensibility(APPENDABLE)
         struct Price {
@@ -520,11 +506,7 @@ fn rust_key_fixed_uses_cdr2() {
     "#;
     let out = gen(Backend::Rust, idl);
     assert!(
-        !out.contains("self.amount.to_le_bytes()"),
-        "Fixed @key field must not use to_le_bytes: {out}"
-    );
-    assert!(
-        out.contains("self.amount.encode_cdr2_le"),
-        "Fixed @key field must use CDR2 serialization: {out}"
+        out.contains("No KeyHolder generated") && !out.contains("fn write_key_holder"),
+        "a fixed key has no KeyHolder writer call; the type says so: {out}"
     );
 }

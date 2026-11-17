@@ -32,7 +32,9 @@ impl Parser {
 
         let mut module = Module::new(name.clone());
 
-        // Push module scope for FQN resolution of constants
+        // Declared at its first opening; push its scope for name resolution.
+        let seq = self.next_seq();
+        self.declare(crate::scope::join(&self.scope_stack, &name), seq);
         self.scope_stack.push(name);
 
         while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
@@ -67,10 +69,13 @@ impl Parser {
                 continue;
             }
 
-            let def = self.parse_definition()?;
-            match def {
-                Definition::Module(nested) => merge_module_into(&mut module.definitions, nested),
-                other => module.add_definition(other),
+            for def in self.parse_definition()? {
+                match def {
+                    Definition::Module(nested) => {
+                        module.add_definition(Definition::Module(nested));
+                    }
+                    other => module.add_definition(other),
+                }
             }
         }
 
@@ -82,16 +87,4 @@ impl Parser {
 
         Ok(module)
     }
-}
-
-pub(crate) fn merge_module_into(defs: &mut Vec<Definition>, mut incoming: Module) {
-    for def in defs.iter_mut() {
-        if let Definition::Module(existing) = def {
-            if existing.name == incoming.name {
-                existing.definitions.append(&mut incoming.definitions);
-                return;
-            }
-        }
-    }
-    defs.push(Definition::Module(incoming));
 }

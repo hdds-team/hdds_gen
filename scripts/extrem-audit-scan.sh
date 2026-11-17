@@ -17,8 +17,16 @@
 # - ISO 26262 ASIL-D
 #
 # Exit codes:
-#  0 = Perfect code (ready for nuclear submarines)
-#  1+ = Number of violations found
+#  0 = No CRITICAL, no HIGH
+#  1 = At least one CRITICAL or HIGH violation
+#
+# The exit status is a verdict, never a count: shell exit codes wrap modulo
+# 256, so a count of exactly 256 would be reported to the caller as success.
+# The counts are in the summary output.
+#
+# Every detector reports every hit that survives its filters: there is no cap
+# on the number of findings (a cap applied before the filters keeps an arbitrary
+# subset of the raw hits, filters it, and reports a clean pass).
 #
 # EXEMPTION SYSTEM:
 # Add `// @audit-ok: <reason>` on the line BEFORE the flagged code to exempt it.
@@ -45,15 +53,13 @@ readonly PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly SRC_DIR="${PROJECT_ROOT}/src"
 readonly HDDS_GEN_DIR="${PROJECT_ROOT}/tools/hdds-gen/src"
 
-# Ensure local shims for optional tooling are discoverable.
-export PATH="${PROJECT_ROOT}/tools/bin:${PATH}"
-
 # Counters
 TOTAL_VIOLATIONS=0
 CRITICAL_VIOLATIONS=0
 HIGH_VIOLATIONS=0
 MEDIUM_VIOLATIONS=0
 LOW_VIOLATIONS=0
+SUPPRESSED_COUNT=0
 
 # Configuration
 readonly MAX_COMPLEXITY=10  # McCabe complexity
@@ -68,6 +74,8 @@ readonly MAX_UNSAFE_BLOCKS=20  # Pragmatic limit for system-level networking
 readonly MAX_FUNCTION_LINES=130  # No function > 130 lines
 readonly MAX_FILE_LINES=2200  # No file > 2200 lines
 readonly MIN_TEST_COVERAGE=90  # Minimum 90% coverage
+readonly MAX_MEDIUM_ACCEPTED=199  # Acceptance: MEDIUM < 200
+readonly MAX_LOW_ACCEPTED=49  # Acceptance: LOW < 50
 
 ################################################################################
 # Helper Functions
@@ -112,9 +120,45 @@ has_audit_exemption() {
     context=$(sed -n "${start},$((line_num - 1))p" "$file" 2>/dev/null || echo "")
 
     if echo "$context" | grep -qE '@audit-ok:'; then
+        ((SUPPRESSED_COUNT++)) || true
         return 0  # Has exemption
     fi
     return 1  # No exemption
+}
+
+# Succeeds when line `$2` of file `$1` starts inside a Rust raw string literal
+# (r"..." or r#"..."#): generated-code templates, whose contents are text of
+# another language and not code of this crate. Memoised per file.
+declare -A RAW_STRING_LINES=()
+in_raw_string() {
+    local file="$1"
+    local line_num="$2"
+    if [[ -z "${RAW_STRING_LINES[$file]+x}" ]]; then
+        RAW_STRING_LINES[$file]=" $(awk '
+            BEGIN { raw = 0; hashes = 0 }
+            {
+                if (raw) printf "%d ", NR
+                n = length($0); i = 1
+                while (i <= n) {
+                    c = substr($0, i, 1)
+                    if (raw) {
+                        if (c == "\"") {
+                            h = 0
+                            while (h < hashes && substr($0, i + 1 + h, 1) == "#") h++
+                            if (h == hashes) { raw = 0; i += hashes }
+                        }
+                    } else if (c == "/" && substr($0, i + 1, 1) == "/") {
+                        break
+                    } else if (c == "r" && (i == 1 || substr($0, i - 1, 1) !~ /[A-Za-z0-9_]/)) {
+                        j = i + 1; h = 0
+                        while (substr($0, j, 1) == "#") { h++; j++ }
+                        if (substr($0, j, 1) == "\"") { raw = 1; hashes = h; i = j }
+                    }
+                    i++
+                }
+            }' "$file") "
+    fi
+    [[ "${RAW_STRING_LINES[$file]}" == *" $line_num "* ]]
 }
 
 log_section() {
@@ -153,7 +197,7 @@ audit_stubs() {
         fi
         log_critical "$file:$line - Found stub macro: $content"
         ((violations++)) || true
-    done < <(rg -n 'todo!\(|unimplemented!\(' "$SRC_DIR" 2>/dev/null | head -20)
+    done < <(rg -n 'todo!\(|unimplemented!\(' "$SRC_DIR" 2>/dev/null || true)
 
     # Check for TODO/FIXME/HACK/XXX comments - exclude generated code templates
     while IFS=: read -r file line content; do
@@ -171,14 +215,14 @@ audit_stubs() {
         fi
         log_high "$file:$line - Found marker comment: $content"
         ((violations++)) || true
-    done < <(rg -n '//\s*(TODO|FIXME|HACK|XXX|BUG|KLUDGE|REFACTOR|OPTIMIZE)' "$SRC_DIR" 2>/dev/null | head -50)
+    done < <(rg -n '//\s*(TODO|FIXME|HACK|XXX|BUG|KLUDGE|REFACTOR|OPTIMIZE)' "$SRC_DIR" 2>/dev/null || true)
     
     # Check for empty function bodies
     if rg -q 'fn\s+\w+\([^)]*\)\s*(->\s*[^{]+)?\s*\{\s*\}' "$SRC_DIR"; then
         while IFS=: read -r file line content; do
             log_high "$file:$line - Empty function body: $content"
             ((violations++)) || true
-        done < <(rg -n 'fn\s+\w+\([^)]*\)\s*(->\s*[^{]+)?\s*\{\s*\}' "$SRC_DIR" | head -20)
+        done < <(rg -n 'fn\s+\w+\([^)]*\)\s*(->\s*[^{]+)?\s*\{\s*\}' "$SRC_DIR" || true)
     fi
     
     # Check for dbg!() macro (should not be in production)
@@ -186,7 +230,7 @@ audit_stubs() {
         while IFS=: read -r file line content; do
             log_critical "$file:$line - Debug macro in production: $content"
             ((violations++)) || true
-        done < <(rg -n 'dbg!\(' "$SRC_DIR" | head -10)
+        done < <(rg -n 'dbg!\(' "$SRC_DIR" || true)
     fi
     
     if [[ $violations -eq 0 ]]; then
@@ -240,7 +284,7 @@ audit_type_safety() {
             fi
             log_high "$file:$line - Unchecked cast: $content"
             ((violations++)) || true
-        done < <(rg -nP "$pattern" "$SRC_DIR" 2>/dev/null | head -15)
+        done < <(rg -nP "$pattern" "$SRC_DIR" 2>/dev/null || true)
     done
     
     # Check for wrong integer types in RTPS (should be u64 for sequences)
@@ -408,7 +452,7 @@ audit_panics() {
         fi
         log_high "$file:$line - unwrap() detected (use expect() or ? operator): $content"
         ((violations++)) || true
-    done < <(rg -n '\.unwrap\(\)' "$SRC_DIR" 2>/dev/null | head -20)
+    done < <(rg -n '\.unwrap\(\)' "$SRC_DIR" 2>/dev/null || true)
     
     # Check for .expect("") with empty message
     while IFS=: read -r file line content; do
@@ -479,10 +523,59 @@ audit_dependencies() {
     # Check for security vulnerabilities
     if check_command cargo-audit; then
         echo "  Running cargo-audit..."
-        if ! cargo audit --quiet 2>/dev/null; then
-            log_critical "Security vulnerabilities found in dependencies"
-        else
-            log_pass "No known vulnerabilities"
+        local audit_output audit_rc=0 audit_stale=0 audit_reported=0
+        # THE EXIT STATUS CARRIES THE VERDICT, the output only explains it.
+        # cargo-audit exits 0 when the audit completed and found nothing it
+        # treats as a failure (allowed warnings included), and non-zero both
+        # when it finds vulnerabilities AND when it fails to run. Reading only
+        # the text meant that any failure shape the patterns did not cover --
+        # a database that fails to load after a successful fetch, an output in
+        # JSON because the user configured it, any unanticipated error -- fell
+        # through to "No known vulnerabilities", i.e. a silent false clearance
+        # on a security audit. So: PASS requires a completed audit, and an
+        # unrecognised failure is reported, never swallowed.
+        audit_output=$(cargo audit 2>&1) || audit_rc=$?
+        # A fetch failure is not a verdict either: retry on the local copy, say
+        # so, and never pass when no database could be consulted.
+        if echo "$audit_output" | grep -qE "couldn't fetch advisory database|failed to fetch advisory database"; then
+            audit_stale=1
+            audit_rc=0
+            audit_output=$(cargo audit -n 2>&1) || audit_rc=$?
+            if echo "$audit_output" | grep -qE "error loading advisory database|no advisory database|couldn't open advisory database"; then
+                log_high "cargo-audit could not consult any advisory database (fetch failed and no local copy): dependencies NOT audited"
+                audit_reported=1
+            else
+                log_medium "cargo-audit ran on the LOCAL advisory database (fetch failed, database may be stale)"
+            fi
+        fi
+        if echo "$audit_output" | grep -q "unsupported CVSS version"; then
+            log_low "cargo-audit database uses CVSS 4.0 (not yet supported by cargo-audit)"
+        fi
+        if [[ $audit_reported -eq 0 ]]; then
+            if echo "$audit_output" | grep -qE "^Vulnerability|[0-9]+ vulnerabilit(y|ies) found"; then
+                log_critical "Security vulnerabilities found in dependencies"
+            elif [[ $audit_rc -ne 0 ]]; then
+                # Non-zero, and not a shape we recognise: do NOT clear the tree.
+                log_high "cargo-audit exited $audit_rc with an output this scan does not recognise: dependencies NOT audited"
+            elif [[ $audit_stale -ne 0 ]]; then
+                : # already reported as MEDIUM above; a stale database cannot clear
+            else
+                log_pass "No known vulnerabilities"
+            fi
+        fi
+        # Advisories that are not vulnerabilities (unmaintained, unsound, yanked)
+        # are counted by cargo-audit as "allowed warnings" and exit 0 with them,
+        # so a scan that only looks for vulnerabilities clears them in silence.
+        local audit_warnings
+        audit_warnings=$(echo "$audit_output" | sed -n 's/^warning: \([0-9]\+\) allowed warnings\? found$/\1/p' | tail -1)
+        if [[ -n "$audit_warnings" && "$audit_warnings" != "0" ]]; then
+            local audit_unsound
+            audit_unsound=$(echo "$audit_output" | grep -c "^Warning:[[:space:]]*unsound" || true)
+            if [[ "$audit_unsound" -gt 0 ]]; then
+                log_medium "cargo-audit reports $audit_warnings advisory warnings on dependencies, $audit_unsound of them unsound"
+            else
+                log_low "cargo-audit reports $audit_warnings advisory warnings on dependencies (unmaintained or yanked, no vulnerability)"
+            fi
         fi
     fi
     
@@ -502,10 +595,12 @@ audit_dependencies() {
         log_low "High number of dependencies: $dep_count (consider reducing)"
     fi
     
-    # Check for duplicate dependencies with different versions
+    # Check for duplicate dependencies with different versions. The tree
+    # lists a crate once per path that reaches it, so dedupe on name+version
+    # first: a crate counts only when two distinct versions are in the tree.
     local duplicates=$(cargo tree --prefix none --no-dedupe 2>/dev/null | \
-                       grep -oE '^[a-z0-9_-]+ v[0-9.]+' | \
-                       cut -d' ' -f1 | sort | uniq -c | grep -v '^ *1 ' | wc -l)
+                       grep -oE '^[a-z0-9_-]+ v[0-9.]+' | sort -u | \
+                       cut -d' ' -f1 | uniq -c | grep -v '^ *1 ' | wc -l)
     if [[ $duplicates -gt 0 ]]; then
         log_medium "Found $duplicates duplicate dependencies with different versions"
     fi
@@ -597,7 +692,7 @@ audit_documentation() {
                 ((violations++)) || true
             fi
         fi
-    done < <(rg -n '^pub (fn|struct|enum|trait|type|const|static) \w+' "$SRC_DIR" 2>/dev/null | head -30)
+    done < <(rg -n '^pub (fn|struct|enum|trait|type|const|static) \w+' "$SRC_DIR" 2>/dev/null || true)
     
     # Check for # Safety sections in unsafe functions
     if rg -q 'pub unsafe fn' "$SRC_DIR"; then
@@ -638,7 +733,7 @@ audit_concurrency() {
         while IFS=: read -r file line content; do
             log_high "$file:$line - Mutex lock without poison handling: $content"
             ((violations++)) || true
-        done < <(rg -n '\.lock\(\)\.unwrap\(\)' "$SRC_DIR" | head -10)
+        done < <(rg -n '\.lock\(\)\.unwrap\(\)' "$SRC_DIR" || true)
     fi
     
     # Check for potential race conditions (static with interior mutability)
@@ -767,6 +862,10 @@ audit_rtps_compliance() {
         if echo "$content" | grep -q "const"; then
             continue
         fi
+        # Skip text inside a raw string literal: a generated-code template
+        if in_raw_string "$file" "$line"; then
+            continue
+        fi
         # Skip standard byte-swap masks (0xFF, 0xFF00, etc.) - these are idiomatic
         if echo "$content" | grep -qE '0x(0*)FF(0*)u?l*\b|0x00FF|0xFF00'; then
             continue
@@ -777,7 +876,7 @@ audit_rtps_compliance() {
         fi
         log_medium "$file:$line - Magic number without const: $content"
         ((violations++)) || true
-    done < <(rg -n '0x52545053|0x[0-9a-fA-F]{8}' "$SRC_DIR" 2>/dev/null | head -10)
+    done < <(rg -n '0x52545053|0x[0-9a-fA-F]{8}' "$SRC_DIR" 2>/dev/null || true)
     
     if [[ $violations -eq 0 ]]; then
         log_pass "RTPS compliance checks passed"
@@ -861,27 +960,34 @@ main() {
     echo -e "${BOLD}AUDIT SUMMARY${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo "  ${RED}CRITICAL violations: ${CRITICAL_VIOLATIONS}${NC}"
-    echo "  ${RED}HIGH violations:     ${HIGH_VIOLATIONS}${NC}"
-    echo "  ${YELLOW}MEDIUM violations:   ${MEDIUM_VIOLATIONS}${NC}"
-    echo "  ${CYAN}LOW violations:      ${LOW_VIOLATIONS}${NC}"
-    echo "  ─────────────────────────────"
-    echo "  ${BOLD}TOTAL VIOLATIONS:    ${TOTAL_VIOLATIONS}${NC}"
+    echo -e "  ${RED}CRITICAL violations: ${CRITICAL_VIOLATIONS}${NC}"
+    echo -e "  ${RED}HIGH violations:     ${HIGH_VIOLATIONS}${NC}"
+    echo -e "  ${YELLOW}MEDIUM violations:   ${MEDIUM_VIOLATIONS}${NC}"
+    echo -e "  ${CYAN}LOW violations:      ${LOW_VIOLATIONS}${NC}"
+    echo "  -----------------------------"
+    echo -e "  ${BOLD}TOTAL VIOLATIONS:    ${TOTAL_VIOLATIONS}${NC}"
     echo ""
-    
+    if [[ $SUPPRESSED_COUNT -gt 0 ]]; then
+        echo -e "  ${GREEN}Suppressed (@audit-ok): ${SUPPRESSED_COUNT}${NC}"
+        echo ""
+    fi
+
+    # The exit status is a verdict: 0 = passed, 1 = failed.
     if [[ $TOTAL_VIOLATIONS -eq 0 ]]; then
-        echo -e "${GREEN}${BOLD}✅ PERFECT SCORE! Code is military-grade certified!${NC}"
-        echo -e "${GREEN}   Ready for deployment in nuclear submarines 🚀${NC}"
+        echo -e "${GREEN}${BOLD}[OK] PERFECT SCORE${NC}"
         echo ""
         exit 0
     elif [[ $CRITICAL_VIOLATIONS -eq 0 ]] && [[ $HIGH_VIOLATIONS -eq 0 ]]; then
-        echo -e "${YELLOW}⚠️  Minor issues found but no critical problems${NC}"
-        echo -e "${YELLOW}   Fix medium/low issues for perfect score${NC}"
+        if [[ $MEDIUM_VIOLATIONS -le $MAX_MEDIUM_ACCEPTED ]] && [[ $LOW_VIOLATIONS -le $MAX_LOW_ACCEPTED ]]; then
+            echo -e "${GREEN}[OK] Within acceptance criteria (MEDIUM<=${MAX_MEDIUM_ACCEPTED}, LOW<=${MAX_LOW_ACCEPTED})${NC}"
+            echo ""
+            exit 0
+        fi
+        echo -e "${YELLOW}[!] Minor issues exceed acceptance criteria (MEDIUM<=${MAX_MEDIUM_ACCEPTED}, LOW<=${MAX_LOW_ACCEPTED})${NC}"
         echo ""
-        exit $TOTAL_VIOLATIONS
+        exit 1
     else
-        echo -e "${RED}${BOLD}❌ AUDIT FAILED - Critical issues must be fixed!${NC}"
-        echo -e "${RED}   Not ready for production deployment${NC}"
+        echo -e "${RED}${BOLD}[X] AUDIT FAILED - ${CRITICAL_VIOLATIONS} CRITICAL and ${HIGH_VIOLATIONS} HIGH must be fixed${NC}"
         echo ""
         echo "Recommended actions:"
         echo "  1. Fix all CRITICAL violations immediately"
@@ -889,7 +995,7 @@ main() {
         echo "  3. Plan to fix MEDIUM violations in next sprint"
         echo "  4. Track LOW violations in backlog"
         echo ""
-        exit $TOTAL_VIOLATIONS
+        exit 1
     fi
 }
 

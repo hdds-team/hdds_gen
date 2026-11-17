@@ -81,10 +81,11 @@ fn interop_c_struct_and_union() {
         if (enc < 0) return 1;
 
         Message out = {0};
-        // pre-allocate content buffer for decode
-        char content_out[64];
-        out.content = content_out;
-        int dec = message_decode_cdr2_le(&out, buf, (size_t)enc);
+        // the decoder takes the string's storage from an arena
+        static uint8_t heap[1024];
+        hdds_x2c_arena ar;
+        hdds_x2c_arena_init(&ar, heap, sizeof heap);
+        int dec = message_decode_cdr2_le_alloc(&out, buf, (size_t)enc, hdds_x2c_arena_alloc, &ar);
         if (dec != enc) return 2;
         if (out.id != 42) return 3;
         if (strcmp(out.content, "Hello") != 0) return 4;
@@ -106,11 +107,10 @@ fn interop_c_struct_and_union() {
         enc_u = data_encode_cdr2_le(&d, buf, sizeof(buf));
         if (enc_u < 0) return 20;
         Data dout2 = {0};
-        // pre-alloc buffer for string
-        char s2[64];
-        dout2._d = 2;
-        dout2._u.string_value = s2;
-        dec_u = data_decode_cdr2_le(&dout2, buf, (size_t)enc_u);
+        // without an allocator, a string has no storage: refused
+        if (data_decode_cdr2_le(&dout2, buf, (size_t)enc_u) != -CDR_OUT_OF_MEMORY) return 23;
+        hdds_x2c_arena_init(&ar, heap, sizeof heap);
+        dec_u = data_decode_cdr2_le_alloc(&dout2, buf, (size_t)enc_u, hdds_x2c_arena_alloc, &ar);
         if (dec_u != enc_u) return 21;
         if (dout2._d != 2 || strcmp(dout2._u.string_value, "World") != 0) return 22;
 

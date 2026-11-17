@@ -7,43 +7,30 @@
 
 use super::Parser;
 use crate::ast::Typedef;
-use crate::error::{ErrorKind, ParseError, Result};
+use crate::error::Result;
 use crate::token::TokenKind;
-use crate::types::IdlType;
 
 impl Parser {
-    pub(super) fn parse_typedef(&mut self) -> Result<Typedef> {
+    /// `typedef type d1, d2[N][M], ...;` (IDL 4.2 7.4.1.4.3): a typedef per
+    /// declarator, an array declarator wrapping the type for its own name.
+    pub(super) fn parse_typedef(&mut self) -> Result<Vec<Typedef>> {
         self.expect(&TokenKind::Typedef, "Expected 'typedef'")?;
 
         let base_type = self.parse_type()?;
 
-        let name = if let TokenKind::Identifier(name) = &self.current_token().kind {
-            name.clone()
-        } else {
-            return Err(ParseError::new(
-                ErrorKind::InvalidIdentifier,
-                self.current_position(),
-                "Expected typedef name",
-            ));
-        };
-        self.advance();
-
-        // Handle C-style array syntax: typedef double name[9];
-        // This wraps the base_type in an Array type
-        let final_type = if self.check(&TokenKind::LeftBracket) {
-            self.advance(); // consume '['
-            let size = self.parse_bound_u32("array bound")?;
-            self.expect(&TokenKind::RightBracket, "Expected ']' after array size")?;
-            IdlType::Array {
-                inner: Box::new(base_type),
-                size,
+        let mut typedefs = Vec::new();
+        loop {
+            let (name, ty) = self.parse_declarator(&base_type, "typedef")?;
+            typedefs.push(Typedef::new(name, ty));
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
             }
-        } else {
-            base_type
-        };
+        }
 
         self.expect(&TokenKind::Semicolon, "Expected ';' after typedef")?;
 
-        Ok(Typedef::new(name, final_type))
+        Ok(typedefs)
     }
 }

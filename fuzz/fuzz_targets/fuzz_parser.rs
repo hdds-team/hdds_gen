@@ -8,7 +8,9 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     // Feed raw bytes through full parse pipeline - should never panic
     if let Ok(s) = std::str::from_utf8(data) {
-        let mut parser = hddsgen::Parser::new(s);
+        let Ok(mut parser) = hddsgen::Parser::try_new(s) else {
+            return;
+        };
         if let Ok(ast) = parser.parse() {
             // If parsing succeeds, try validation too
             let _ = hddsgen::validate(&ast);

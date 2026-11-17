@@ -7,14 +7,24 @@
 
 use super::formatter::push_def;
 use super::helpers::{
-    indent, push_fmt, render_annotation, render_annotations_line, split_array, type_to_idl,
+    ident, indent, literal_to_idl, push_fmt, render_annotation, render_annotations_line,
+    split_array, type_to_idl,
 };
 use crate::ast::{AnnotationDecl, Definition, Module, Typedef};
 use crate::types::Annotation;
 use std::fmt::Write;
 
 pub(super) fn push_module(out: &mut String, m: &Module, level: usize) {
-    push_fmt(out, format_args!("{}module {} {{\n", indent(level), m.name));
+    for ann in &m.annotations {
+        push_fmt(
+            out,
+            format_args!("{}{}\n", indent(level), render_annotation(ann)),
+        );
+    }
+    push_fmt(
+        out,
+        format_args!("{}module {} {{\n", indent(level), ident(&m.name)),
+    );
     let mut i = 0usize;
     while i < m.definitions.len() {
         if matches!(m.definitions[i], Definition::Typedef(_)) {
@@ -76,10 +86,16 @@ pub(super) fn push_typedef_with_pad(
     if dims.is_empty() {
         push_fmt(
             out,
-            format_args!("{}typedef {}{} {};\n", indent(level), base_str, pad, t.name),
+            format_args!(
+                "{}typedef {}{} {};\n",
+                indent(level),
+                base_str,
+                pad,
+                ident(&t.name)
+            ),
         );
     } else {
-        let mut name_with_dims = t.name.clone();
+        let mut name_with_dims = ident(&t.name);
         for d in dims {
             let _ = write!(&mut name_with_dims, "[{d}]");
         }
@@ -99,7 +115,7 @@ pub(super) fn push_typedef_with_pad(
 pub(super) fn push_annotation_decl(out: &mut String, ad: &AnnotationDecl, level: usize) {
     push_fmt(
         out,
-        format_args!("{}@annotation {} {{\n", indent(level), ad.name),
+        format_args!("{}@annotation {} {{\n", indent(level), ident(&ad.name)),
     );
     for member in &ad.members {
         if let Some(default) = &member.default {
@@ -109,14 +125,19 @@ pub(super) fn push_annotation_decl(out: &mut String, ad: &AnnotationDecl, level:
                     "{}{} {} default {};\n",
                     indent(level + 1),
                     member.ty,
-                    member.name,
-                    default
+                    ident(&member.name),
+                    literal_to_idl(default)
                 ),
             );
         } else {
             push_fmt(
                 out,
-                format_args!("{}{} {};\n", indent(level + 1), member.ty, member.name),
+                format_args!(
+                    "{}{} {};\n",
+                    indent(level + 1),
+                    member.ty,
+                    ident(&member.name)
+                ),
             );
         }
     }

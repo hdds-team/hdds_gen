@@ -68,12 +68,12 @@ fn c_generates_fixed_point_support() -> TestResult<()> {
         "fixed field did not map to raw storage"
     );
     assert!(
-        code.contains("cdr_need_write(len, offset, CDR_SIZE_FIXED128)"),
-        "encode path did not reserve 16 bytes for fixed field"
+        code.contains("cdr_fixed128_to_le(&(v->amount), hx_fx"),
+        "encode path did not write the fixed field"
     );
     assert!(
-        code.contains("cdr_need_read(len, offset, CDR_SIZE_FIXED128)"),
-        "decode path did not reserve 16 bytes for fixed field"
+        code.contains("cdr_fixed128_from_le(&(v->amount), hx_fx"),
+        "decode path did not read the fixed field"
     );
     Ok(())
 }

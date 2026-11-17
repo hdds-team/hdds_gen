@@ -13,37 +13,44 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 use super::const_expr::ConstValue;
-use super::definitions::merge_module_into;
 
 /// Parser state machine that consumes a token stream and produces an AST.
 pub struct Parser {
     pub(super) tokens: Vec<Token>,
     pub(super) current: usize,
+    /// Constants by global name (`m::MAX`).
     pub(super) const_env: HashMap<String, ConstValue>,
+    /// Every global name declared so far, with the sequence number of its
+    /// first declaration (modules, types, constants, enumerators).
+    pub(super) decl_seq: HashMap<String, usize>,
+    /// The sequence number of the definition (struct, union, typedef) of
+    /// each global name: what it may reference was declared before it.
+    pub(super) def_seq: HashMap<String, usize>,
+    /// Next declaration sequence number.
+    pub(super) seq: usize,
     /// Module scope stack for FQN resolution (e.g., `["my_mod", "inner"]`)
     pub(super) scope_stack: Vec<String>,
+    /// The lexer error [`Parser::new`] met, returned by [`Parser::parse`]
+    /// instead of an empty AST.
+    lex_error: Option<ParseError>,
 }
 
 impl Parser {
     /// Create a new parser from IDL source code.
     ///
-    /// Lexer errors are silently swallowed.  Prefer [`try_new`](Self::try_new)
-    /// which propagates them.
+    /// A lexer error is kept and returned by [`parse`](Self::parse), so an
+    /// invalid input never parses to an empty AST. Prefer
+    /// [`try_new`](Self::try_new), which returns it at once.
     #[must_use]
     #[deprecated(since = "1.1.0", note = "use try_new() which propagates lexer errors")]
     pub fn new(input: &str) -> Self {
-        let mut lexer = Lexer::new(input);
-        let mut tokens = lexer.tokenize().unwrap_or_else(|_| vec![]);
-
-        if tokens.is_empty() {
-            tokens.push(Token::new(TokenKind::Eof, "", Position::new(1, 1)));
-        }
-
-        Self {
-            tokens,
-            current: 0,
-            const_env: HashMap::default(),
-            scope_stack: Vec::new(),
+        match Self::try_new(input) {
+            Ok(parser) => parser,
+            Err(e) => {
+                let mut parser = Self::from_tokens(Vec::new());
+                parser.lex_error = Some(e);
+                parser
+            }
         }
     }
 
@@ -65,6 +72,10 @@ impl Parser {
             current: 0,
             const_env: HashMap::default(),
             scope_stack: Vec::new(),
+            lex_error: None,
+            decl_seq: HashMap::default(),
+            def_seq: HashMap::default(),
+            seq: 0,
         })
     }
 
@@ -85,6 +96,10 @@ impl Parser {
             current: 0,
             const_env: HashMap::default(),
             scope_stack: Vec::new(),
+            lex_error: None,
+            decl_seq: HashMap::default(),
+            def_seq: HashMap::default(),
+            seq: 0,
         }
     }
 
@@ -121,7 +136,8 @@ impl Parser {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(kind)
     }
 
-    /// Parse a bound value: either an integer literal or a const identifier.
+    /// Parse a bound value: either an integer literal or a (possibly
+    /// scoped or absolute) constant name.
     pub(super) fn parse_bound_u32(&mut self, context: &str) -> Result<u32> {
         let pos = self.current_position();
         match self.peek() {
@@ -130,36 +146,14 @@ impl Parser {
                 self.advance();
                 Self::literal_u32(raw, pos, context)
             }
-            TokenKind::Identifier(name) => {
-                let mut id = name.clone();
-                self.advance();
-                // Handle scoped identifiers (e.g., limits::MAX_LEN)
-                while self.check(&TokenKind::DoubleColon) {
-                    self.advance(); // consume ::
-                    if let TokenKind::Identifier(next) = self.peek() {
-                        id.push_str("::");
-                        id.push_str(next);
-                        self.advance();
-                    } else {
-                        return Err(ParseError::new(
-                            ErrorKind::InvalidSyntax,
-                            self.current_position(),
-                            format!("Expected identifier after '::' in {context}"),
-                        ));
-                    }
-                }
-                let val = self.const_env.get(&id).ok_or_else(|| {
-                    ParseError::new(
-                        ErrorKind::InvalidSyntax,
-                        pos,
-                        format!("Unknown constant '{id}' used as {context}"),
-                    )
-                })?;
+            TokenKind::Identifier(_) | TokenKind::DoubleColon => {
+                let name = self.parse_scoped_name(context)?;
+                let val = self.lookup_const(&name, pos)?;
                 let int_val = val.as_int(pos).map_err(|_| {
                     ParseError::new(
                         ErrorKind::InvalidSyntax,
                         pos,
-                        format!("Constant '{id}' is not an integer"),
+                        format!("Constant '{name}' is not an integer"),
                     )
                 })?;
                 Self::literal_u32(int_val, pos, context)
@@ -170,6 +164,106 @@ impl Parser {
                 format!("Expected integer or constant for {context}"),
             )),
         }
+    }
+
+    /// A scoped name, `a`, `a::b` or `::a::b`, as written.
+    pub(super) fn parse_scoped_name(&mut self, context: &str) -> Result<String> {
+        let mut name = String::new();
+        if self.check(&TokenKind::DoubleColon) {
+            self.advance();
+            name.push_str("::");
+        }
+        loop {
+            let TokenKind::Identifier(part) = self.peek().clone() else {
+                return Err(ParseError::new(
+                    ErrorKind::InvalidSyntax,
+                    self.current_position(),
+                    format!("Expected identifier in {context}"),
+                ));
+            };
+            self.advance();
+            name.push_str(&part);
+            if !self.check(&TokenKind::DoubleColon) {
+                return Ok(name);
+            }
+            self.advance();
+            name.push_str("::");
+        }
+    }
+
+    /// The value of the constant `name` names from the current scope, by
+    /// the IDL 4.2 scoping rules ([`crate::scope`]) over the names declared
+    /// so far.
+    pub(super) fn lookup_const(&self, name: &str, pos: Position) -> Result<ConstValue> {
+        let global =
+            crate::scope::resolve(&self.scope_stack, name, |q| self.decl_seq.contains_key(q));
+        global
+            .and_then(|g| self.const_env.get(&g))
+            .cloned()
+            .ok_or_else(|| {
+                ParseError::new(
+                    ErrorKind::InvalidSyntax,
+                    pos,
+                    format!("Unknown constant '{name}'"),
+                )
+            })
+    }
+
+    /// The next declaration sequence number.
+    pub(super) const fn next_seq(&mut self) -> usize {
+        self.seq += 1;
+        self.seq
+    }
+
+    /// Record that `global` is declared (first declaration wins).
+    pub(super) fn declare(&mut self, global: String, seq: usize) {
+        self.decl_seq.entry(global).or_insert(seq);
+    }
+
+    /// A reference to a name declared only AFTER the definition holding it
+    /// (in a nearer scope than the declaration visible at that point) is
+    /// rewritten as the absolute name of the declaration that was visible
+    /// (IDL 4.2 7.5: a name is resolved where it is used; Cyclone DDS
+    /// reads it the same way), so that every later lookup, which sees the
+    /// whole file, still finds it.
+    fn pin_declaration_order(&self, file: &mut IdlFile) {
+        fn walk(p: &Parser, defs: &mut [Definition], scope: &mut Vec<String>) {
+            for def in defs {
+                if let Definition::Module(m) = def {
+                    scope.push(m.name.clone());
+                    walk(p, &mut m.definitions, scope);
+                    scope.pop();
+                    continue;
+                }
+                let Some((name, _)) = crate::scope::declared_name(def) else {
+                    continue;
+                };
+                let Some(&at) = p.def_seq.get(&crate::scope::join(scope, name)) else {
+                    continue;
+                };
+                // A structure is in scope inside its own body (a member
+                // `sequence<Node>`); a typedef's name is not in scope in its
+                // own type: `typedef T T;` inside `A` names the outer `T`.
+                let own_visible = !matches!(def, Definition::Typedef(_));
+                crate::scope::for_each_reference_mut(def, &mut |n: &mut String| {
+                    if n.starts_with("::") {
+                        return;
+                    }
+                    let then = crate::scope::resolve(scope, n, |q| {
+                        p.decl_seq
+                            .get(q)
+                            .is_some_and(|&d| d < at || (own_visible && d == at))
+                    });
+                    let now = crate::scope::resolve(scope, n, |q| p.decl_seq.contains_key(q));
+                    if let Some(then) = then {
+                        if now.as_ref() != Some(&then) {
+                            *n = format!("::{then}");
+                        }
+                    }
+                });
+            }
+        }
+        walk(self, &mut file.definitions, &mut Vec::new());
     }
 
     pub(super) fn literal_u32(value: i64, position: Position, context: &str) -> Result<u32> {
@@ -239,8 +333,12 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns an error when the token stream describes an invalid IDL construct.
+    /// Returns an error when the token stream describes an invalid IDL
+    /// construct, or the lexer error of a parser built by [`Parser::new`].
     pub fn parse(&mut self) -> Result<IdlFile> {
+        if let Some(e) = &self.lex_error {
+            return Err(e.clone());
+        }
         let mut file = IdlFile::new();
 
         while !self.is_at_end() {
@@ -274,13 +372,17 @@ impl Parser {
                 continue;
             }
 
-            let def = self.parse_definition()?;
-            match def {
-                Definition::Module(m) => merge_module_into(&mut file.definitions, m),
-                other => file.add_definition(other),
+            for def in self.parse_definition()? {
+                match def {
+                    // A reopened module stays where it is reopened (IDL 4.2
+                    // 7.5.2): its definitions keep their declaration order.
+                    Definition::Module(m) => file.add_definition(Definition::Module(m)),
+                    other => file.add_definition(other),
+                }
             }
         }
 
+        self.pin_declaration_order(&mut file);
         Ok(file)
     }
 }

@@ -15,10 +15,19 @@ impl Parser {
     /// Parse a type
     #[allow(clippy::too_many_lines)]
     pub(super) fn parse_type(&mut self) -> Result<IdlType> {
-        // Handle namespace prefix (::Mod1::Type)
-        while self.check(&TokenKind::DoubleColon) {
+        // An absolute scoped name, `::Mod1::Type` (IDL 4.2 7.5): the leading
+        // `::` is kept in the name, it selects the type declared at the root
+        // even when an enclosing module declares one of the same name.
+        if self.check(&TokenKind::DoubleColon) {
             self.advance();
-            // For now, skip namespace resolution
+            return match self.parse_type()? {
+                IdlType::Named(name) => Ok(IdlType::Named(format!("::{name}"))),
+                _ => Err(ParseError::new(
+                    ErrorKind::InvalidSyntax,
+                    self.current_position(),
+                    "Expected a type name after '::'",
+                )),
+            };
         }
 
         match self.peek() {
@@ -110,14 +119,10 @@ impl Parser {
                 // Check for bounded string: string<N> or string<CONST>
                 if self.check(&TokenKind::LeftAngle) {
                     self.advance(); // consume <
-                    let bound = Some(self.parse_bound_u32("string bound")?);
+                    let bound = self.parse_bound_u32("string bound")?;
                     self.expect_angle_close("Expected '>' after string bound")?;
 
-                    // Return as a bounded sequence of char (for bounded strings)
-                    Ok(IdlType::Sequence {
-                        inner: Box::new(IdlType::Primitive(PrimitiveType::Char)),
-                        bound,
-                    })
+                    Ok(IdlType::BoundedString { wide: false, bound })
                 } else {
                     Ok(IdlType::Primitive(PrimitiveType::String))
                 }
@@ -126,12 +131,9 @@ impl Parser {
                 self.advance();
                 if self.check(&TokenKind::LeftAngle) {
                     self.advance();
-                    let bound = Some(self.parse_bound_u32("wstring bound")?);
+                    let bound = self.parse_bound_u32("wstring bound")?;
                     self.expect_angle_close("Expected '>' after wstring bound")?;
-                    Ok(IdlType::Sequence {
-                        inner: Box::new(IdlType::Primitive(PrimitiveType::WChar)),
-                        bound,
-                    })
+                    Ok(IdlType::BoundedString { wide: true, bound })
                 } else {
                     Ok(IdlType::Primitive(PrimitiveType::WString))
                 }

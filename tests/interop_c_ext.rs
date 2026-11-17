@@ -49,10 +49,16 @@ fn write_idl_file(dir: &Path) -> PathBuf {
             string  names[2];
         };
 
+        // `sequence<wchar>` is read as a wstring (the parser holds
+        // `wstring<N>` as a sequence of the wchar keyword, see
+        // data_model::is_string_like); a sequence of wide characters is
+        // a sequence of a typedef of wchar.
+        typedef wchar Glyph;
+
         struct WideStuff {
             wchar   glyph;
             wstring title;
-            sequence<wchar> glyphs;
+            sequence<Glyph> glyphs;
             fixed<10, 2> amount;
         };
 
@@ -89,6 +95,8 @@ fn write_driver(dir: &Path) -> PathBuf {
     #include <string.h>
     #include <wchar.h>
     #include "ext.h"
+
+    static void* xmalloc(void* ctx, size_t n) { (void)ctx; return malloc(n); }
 
     int main(void) {
         Nested n = {0};
@@ -129,17 +137,9 @@ fn write_driver(dir: &Path) -> PathBuf {
         if (enc < 0) return 1;
 
         Nested out = {0};
-        // Prealloc for decode
-        int32_t nums_out[3] = {0}; out.inner.nums.data = nums_out; out.inner.nums.len = 3;
-        char name0[8], name1[8]; char *names_out[2]; names_out[0]=name0; names_out[1]=name1;
-        out.inner.names.data = names_out; out.inner.names.len = 2;
-        char kbuf0[8], kbuf1[8]; char *kouts[2]; kouts[0]=kbuf0; kouts[1]=kbuf1; int32_t vouts[2];
-        out.inner.dict.keys = kouts; out.inner.dict.values = vouts; out.inner.dict.len = 2;
-        char a0[8], a1[8]; out.arr.names[0]=a0; out.arr.names[1]=a1;
-        wchar_t title_out[16]; out.wide.title = title_out;
-        wchar_t glyphs_out[2]; out.wide.glyphs.data = glyphs_out; out.wide.glyphs.len = 2;
-
-        int dec = nested_decode_cdr2_le(&out, buf, (size_t)enc);
+        // The decoder takes the storage of every string, sequence and map
+        // from the allocator (malloc here; the process exits right after).
+        int dec = nested_decode_cdr2_le_alloc(&out, buf, (size_t)enc, xmalloc, NULL);
         if (dec != enc) return 2;
         // Check sequences
         if (out.inner.nums.len != 3 || out.inner.nums.data[0]!=1 || out.inner.nums.data[2]!=3) return 3;

@@ -5,9 +5,11 @@
 //!
 //! Handlers for parse, gen, check, and fmt subcommands.
 
+use hddsgen::preprocessor::{preprocess_no_inline, read_and_preprocess};
+
 use super::{
-    preprocessor::{preprocess_no_inline, read_and_preprocess},
-    BuildSystem, CStandardArg, CheckCmd, FmtCmd, GenCmd, Lang, ParseCmd, SerdeRenameStyle,
+    BuildSystem, CStandardArg, CheckCmd, DefaultExtArg, FmtCmd, GenCmd, Lang, ParseCmd,
+    SerdeRenameStyle,
 };
 use hddsgen::{
     codegen::examples_project,
@@ -63,6 +65,43 @@ pub fn run_parse(cmd: &ParseCmd) {
     }
 }
 
+/// Applies `--default-extensibility` to the structures, unions,
+/// enumerations and bitmasks of `ast` that carry no extensibility
+/// annotation. Without the option they are APPENDABLE, the DDS-XTypes 1.3
+/// default (7.3.1.2.1.8), and, when `info` is set, a note naming them and
+/// the option that restores the FINAL layout of hddsgen 1.x goes to stderr.
+fn apply_default_extensibility(
+    cmd: &GenCmd,
+    ast: &mut hddsgen::IdlFile,
+    origin: &std::path::Path,
+    info: bool,
+) {
+    use hddsgen::types::ExtensibilityKind;
+    let kind = match cmd.default_extensibility {
+        Some(DefaultExtArg::Final) => ExtensibilityKind::Final,
+        None | Some(DefaultExtArg::Appendable) => ExtensibilityKind::Appendable,
+        Some(DefaultExtArg::Mutable) => ExtensibilityKind::Mutable,
+    };
+    let names = hddsgen::codegen::data_model::apply_default_extensibility(ast, kind);
+    if info && cmd.default_extensibility.is_none() && !names.is_empty() {
+        let shown: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+        let more = if names.len() > shown.len() {
+            ", ..."
+        } else {
+            ""
+        };
+        eprintln!(
+            "info: {}: {} type(s) without an extensibility annotation ({}{more}) \
+             generated as APPENDABLE, the DDS-XTypes 1.3 default (7.3.1.2.1.8). \
+             hddsgen 1.x generated them as FINAL: pass \
+             --default-extensibility final for that layout, or annotate them.",
+            origin.display(),
+            names.len(),
+            shown.join(", ")
+        );
+    }
+}
+
 /// Execute the `gen` subcommand.
 #[allow(clippy::too_many_lines)]
 pub fn run_gen(cmd: &GenCmd) {
@@ -83,13 +122,15 @@ pub fn run_gen(cmd: &GenCmd) {
         eprintln!("Lexer error: {e}");
         std::process::exit(1);
     });
-    let ast = match parser.parse() {
+    let mut ast = match parser.parse() {
         Ok(ast) => ast,
         Err(e) => {
             eprintln!("Parse error: {e}");
             std::process::exit(1);
         }
     };
+    apply_default_extensibility(cmd, &mut ast, &cmd.input, true);
+    refuse_invalid(&ast);
 
     // Convert CLI C standard to library type
     let c_standard = match cmd.c_standard {
@@ -106,11 +147,15 @@ pub fn run_gen(cmd: &GenCmd) {
             Box::new(hddsgen::codegen::c_micro::CMicroGenerator::new())
         }
         Lang::Cpp => {
-            if cmd.fastdds_compat {
-                Box::new(CppGenerator::with_fastdds_compat())
+            let generator = if cmd.fastdds_compat {
+                CppGenerator::with_fastdds_compat()
             } else {
-                Backend::Cpp.generator()
-            }
+                CppGenerator::new()
+            };
+            Box::new(match &cmd.namespace_cpp {
+                Some(ns) => generator.with_namespace(ns),
+                None => generator,
+            })
         }
         Lang::Rust => {
             if cmd.serde {
@@ -141,12 +186,6 @@ pub fn run_gen(cmd: &GenCmd) {
     // For C++, insert #include directives for included IDL files
     if matches!(cmd.lang, Lang::Cpp) && !preprocess_result.includes.is_empty() {
         output = insert_cpp_includes(&output, &preprocess_result.includes);
-    }
-
-    if matches!(cmd.lang, Lang::Cpp) {
-        if let Some(ns) = &cmd.namespace_cpp {
-            output = wrap_cpp_namespace(&output, ns);
-        }
     }
 
     // --example: Generate full project structure
@@ -246,12 +285,12 @@ pub fn run_gen(cmd: &GenCmd) {
                 eprintln!("Error creating directory '{}': {e}", dir.display());
                 std::process::exit(1);
             }
-            let mod_path = dir.join("mod.rs");
+            let mod_path = dir.join(out_dir_file_name(cmd.lang, &cmd.input));
             if let Err(e) = fs::write(&mod_path, &output) {
                 eprintln!("Error writing '{}': {e}", mod_path.display());
                 std::process::exit(1);
             }
-            eprintln!("Generated module: {}", mod_path.display());
+            eprintln!("Generated: {}", mod_path.display());
         }
         (None, None) => {
             println!("{output}");
@@ -421,68 +460,28 @@ fn insert_cpp_includes(code: &str, includes: &[std::path::PathBuf]) -> String {
     }
 }
 
-fn wrap_cpp_namespace(code: &str, ns: &str) -> String {
-    let parts: Vec<&str> = ns.split("::").filter(|s| !s.is_empty()).collect();
-    if parts.is_empty() {
-        return code.to_string();
-    }
-    let mut insert_pos = 0usize;
-    let mut offset = 0usize;
-    for line in code.lines() {
-        let line_len = line.len() + 1;
-        if line.trim_start().starts_with("#include ") {
-            insert_pos = offset + line_len;
-        }
-        offset += line_len;
-    }
-    if insert_pos == 0 {
-        if let Some(idx) = code.find("\n\n") {
-            insert_pos = idx + 2;
-        }
-    }
-    // Keep CDR2 helpers outside the user namespace so multi-file
-    // compilation works (the include guard would prevent redefinition
-    // inside a different namespace, breaking cdr2:: resolution).
-    if let Some(guard_start) = code.find("#ifndef HDDS_CDR2_HELPERS_DEFINED") {
-        if let Some(guard_end) = code[guard_start..].find("#endif // HDDS_CDR2_HELPERS_DEFINED") {
-            let end = guard_start + guard_end + "#endif // HDDS_CDR2_HELPERS_DEFINED".len();
-            // Move past the trailing newline if present
-            let end = if code.as_bytes().get(end) == Some(&b'\n') {
-                end + 1
-            } else {
-                end
-            };
-            if end > insert_pos {
-                insert_pos = end;
-            }
-        }
-    }
-    let mut open = String::new();
-    for p in &parts {
-        let _ = writeln!(&mut open, "namespace {p} {{");
-    }
-    let mut close = String::new();
-    for p in parts.iter().rev() {
-        let _ = writeln!(&mut close, "}} // namespace {p}");
-    }
-    if insert_pos > 0 && insert_pos < code.len() {
-        format!(
-            "{head}\n{open}\n{tail}\n{close}",
-            head = &code[..insert_pos],
-            tail = &code[insert_pos..]
-        )
-    } else {
-        format!("{open}{code}{close}")
-    }
-}
-
 /// Execute `gen` in separate mode: generate each included IDL as its own file.
-/// This mimics FastDDS/RTI behavior where each .idl becomes a separate .hpp/.rs.
+/// Each .idl becomes a separate .hpp/.rs.
 fn run_gen_separate(cmd: &GenCmd) {
     let Some(out_dir) = cmd.out_dir.as_ref() else {
         eprintln!("--separate requires --out-dir");
         std::process::exit(1);
     };
+    // Validated once as a whole (each file alone names types its includes
+    // declare).
+    match read_and_preprocess(&cmd.input, &cmd.include)
+        .map_err(|e| e.to_string())
+        .and_then(|r| {
+            Parser::try_new(&r.content)
+                .and_then(|mut p| p.parse())
+                .map_err(|e| e.to_string())
+        }) {
+        Ok(ast) => refuse_invalid(&ast),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
     fs::create_dir_all(out_dir).unwrap_or_else(|e| {
         eprintln!("Failed to create output directory: {e}");
         std::process::exit(1);
@@ -527,13 +526,14 @@ fn generate_file_recursive(
         eprintln!("Lexer error in {}: {e}", idl_path.display());
         std::process::exit(1);
     });
-    let ast = match parser.parse() {
+    let mut ast = match parser.parse() {
         Ok(ast) => ast,
         Err(e) => {
             eprintln!("Parse error in {}: {e}", idl_path.display());
             std::process::exit(1);
         }
     };
+    apply_default_extensibility(cmd, &mut ast, idl_path, true);
 
     // Skip if no definitions (e.g., file with only typedefs that resolved to nothing)
     if ast.definitions.is_empty() {
@@ -554,7 +554,10 @@ fn generate_file_recursive(
         .filter_map(|dep_path| {
             let dep_pp = preprocess_no_inline(dep_path, &cmd.include).ok()?;
             let mut dep_parser = Parser::try_new(&dep_pp.content).ok()?;
-            dep_parser.parse().ok()
+            let mut dep_ast = dep_parser.parse().ok()?;
+            // Its own generation already warned.
+            apply_default_extensibility(cmd, &mut dep_ast, dep_path, false);
+            Some(dep_ast)
         })
         .collect();
 
@@ -569,6 +572,9 @@ fn generate_file_recursive(
             };
             if !dep_asts.is_empty() {
                 cpp_gen.set_deps(dep_asts);
+            }
+            if let Some(ns) = &cmd.namespace_cpp {
+                cpp_gen = cpp_gen.with_namespace(ns);
             }
             Box::new(cpp_gen)
         }
@@ -612,22 +618,9 @@ fn generate_file_recursive(
         output = insert_cpp_includes(&output, &preprocess_result.includes);
     }
 
-    // Wrap in namespace if specified
-    if matches!(cmd.lang, Lang::Cpp) {
-        if let Some(ns) = &cmd.namespace_cpp {
-            output = wrap_cpp_namespace(&output, ns);
-        }
-    }
-
     // Determine output filename
     let stem = idl_path.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = match cmd.lang {
-        Lang::Cpp => "hpp",
-        Lang::C | Lang::CMicro => "h",
-        Lang::Rust | Lang::Micro => "rs",
-        Lang::Python => "py",
-        Lang::TypeScript => "ts",
-    };
+    let ext = out_extension(cmd.lang);
     let out_file = out_dir.join(format!("{stem}.{ext}"));
 
     // Write output
@@ -644,4 +637,53 @@ fn diag_to_json(diag: &Diag) -> String {
         eprintln!("Failed to encode diagnostic as JSON: {e}");
         std::process::exit(1);
     })
+}
+
+/// The file extension of a generated file in `lang`.
+const fn out_extension(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Cpp => "hpp",
+        Lang::C | Lang::CMicro => "h",
+        Lang::Rust | Lang::Micro => "rs",
+        Lang::Python => "py",
+        Lang::TypeScript => "ts",
+    }
+}
+
+/// The file `--out-dir` writes in single-file mode: `mod.rs` for the Rust
+/// backends (the directory is the module), else the input's stem with the
+/// language's extension, as `--separate` names each file (`Shapes.hpp`,
+/// `Shapes.py`); `generated.<ext>` for standard input.
+fn out_dir_file_name(lang: Lang, input: &std::path::Path) -> String {
+    if matches!(lang, Lang::Rust | Lang::Micro) {
+        return "mod.rs".to_string();
+    }
+    let stem = if input == std::path::Path::new("-") {
+        "generated".into()
+    } else {
+        input.file_stem().unwrap_or_default().to_string_lossy()
+    };
+    format!("{stem}.{}", out_extension(lang))
+}
+
+/// Run the validator before generating: every diagnostic is printed, and
+/// an error (an unresolved name, a cyclic typedef, a member declared twice)
+/// stops the generation, which would otherwise emit code that does not
+/// compile or means something else. Warnings do not stop it.
+fn refuse_invalid(ast: &hddsgen::IdlFile) {
+    let diags = validate(ast);
+    let mut errors = 0usize;
+    for d in &diags {
+        match d.level {
+            hddsgen::validate::Level::Error => {
+                errors += 1;
+                eprintln!("error: {}", d.message);
+            }
+            hddsgen::validate::Level::Warning => eprintln!("warning: {}", d.message),
+        }
+    }
+    if errors > 0 {
+        eprintln!("hddsgen: {errors} validation error(s); nothing generated");
+        std::process::exit(1);
+    }
 }

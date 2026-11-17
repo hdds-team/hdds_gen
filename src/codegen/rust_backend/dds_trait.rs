@@ -7,7 +7,7 @@
 //! - `type_descriptor()` with FQN
 //! - Type ID (FNV-1a hash of FQN)
 //! - `XTypes` `CompleteTypeObject` (extensibility + member IDs)
-//! - `compute_key()` for `@key` fields
+//! - `has_key()`, `write_key_holder()` and `encode_key()` for `@key` fields
 //! - Field type mappings (IDL -> Rust -> `XTypes`)
 //!
 //! Note: `uninlined_format_args` allowed here due to extensive format!() usage
@@ -15,123 +15,9 @@
 
 #![allow(clippy::uninlined_format_args)]
 
-use std::cell::RefCell;
-use std::collections::HashSet;
-
-use super::helpers;
 use super::{push_fmt, RustGenerator};
 use crate::ast::{Field, Struct};
-use crate::types::{Annotation, IdlType, PrimitiveType};
-
-thread_local! {
-    /// Track types currently being emitted to detect recursive references
-    /// (e.g., struct Node { child: Node; }) and break the cycle.
-    // @audit-ok: thread_local! RefCell is inherently thread-safe (one instance per thread)
-    static EMITTING_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-}
-
-/// How a `@key` field should be hashed in `compute_key()`.
-enum KeyHashKind {
-    /// String: iterate `as_bytes()`
-    String,
-    /// Numeric primitive: `to_le_bytes()` directly
-    Numeric,
-    /// `for b in (self.field as <cast>).to_le_bytes()` — used for bool(u8), char/enum(u32)
-    Cast(&'static str),
-    /// Complex type (struct, typedef, Fixed): CDR2-serialize then hash
-    Cdr2,
-}
-
-/// Classify how a `@key` field type should be hashed.
-fn classify_key_field(field_type: &IdlType) -> KeyHashKind {
-    // String / WString / bounded string (sequence<char>)
-    let is_string = matches!(
-        field_type,
-        IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
-    ) || matches!(
-        field_type,
-        IdlType::Sequence { inner, .. }
-            if matches!(**inner, IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar))
-    );
-    if is_string {
-        return KeyHashKind::String;
-    }
-    // Named type: check if it's an enum (cast u32) or struct/typedef (CDR2)
-    if let IdlType::Named(name) = field_type {
-        return if matches!(
-            helpers::lookup_type_def(name),
-            Some((helpers::TypeDef::Enum(_), _))
-        ) {
-            KeyHashKind::Cast("u32")
-        } else {
-            KeyHashKind::Cdr2
-        };
-    }
-    match field_type {
-        IdlType::Primitive(PrimitiveType::Boolean) => KeyHashKind::Cast("u8"),
-        IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar) => KeyHashKind::Cast("u32"),
-        IdlType::Primitive(PrimitiveType::Fixed { .. }) => KeyHashKind::Cdr2,
-        _ => KeyHashKind::Numeric,
-    }
-}
-
-/// Emit hash code for one `@key` field into `output`.
-fn emit_key_field_hash(output: &mut String, field: &str, kind: &KeyHashKind) {
-    push_fmt(
-        output,
-        format_args!("            // Hash @key field: {field}\n"),
-    );
-    match kind {
-        KeyHashKind::String => {
-            push_fmt(
-                output,
-                format_args!("            for &b in self.{field}.as_bytes() {{\n"),
-            );
-        }
-        KeyHashKind::Numeric => {
-            push_fmt(
-                output,
-                format_args!("            for b in self.{field}.to_le_bytes() {{\n"),
-            );
-        }
-        KeyHashKind::Cast(ty) => {
-            push_fmt(
-                output,
-                format_args!("            for b in (self.{field} as {ty}).to_le_bytes() {{\n"),
-            );
-        }
-        KeyHashKind::Cdr2 => {
-            // DDS-RTPS v2.5 §9.6.4.8 — KeyHash uses a fixed PLAIN_CDR2
-            // serialization of key fields (DDS-XTypes v1.3 §7.4.2),
-            // independent of the type's negotiated QoS data_representation.
-            // No CdrVersion dispatch here. The caller uses encode_cdr2_le_at
-            // (DDS-XTypes v1.3 §7.4.3.4.1 Tab.15) so the field encoder sees
-            // the same global cursor it would observe in a parent struct,
-            // even though the buffer here is single-field.
-            output.push_str("            {\n");
-            output.push_str("                use ::hdds::core::ser::Cdr2Encode;\n");
-            output.push_str("                let mut _kbuf = [0u8; 4096];\n");
-            output.push_str("                let mut _koffset: usize = 0;\n");
-            push_fmt(
-                output,
-                format_args!(
-                    "                if self.{field}.encode_cdr2_le_at(&mut _kbuf, &mut _koffset).is_ok() {{\n"
-                ),
-            );
-            output.push_str("                    for &b in &_kbuf[.._koffset] {\n");
-            output.push_str("                        hash ^= b as u64;\n");
-            output.push_str("                        hash = hash.wrapping_mul(PRIME);\n");
-            output.push_str("                    }\n");
-            output.push_str("                }\n");
-            output.push_str("            }\n\n");
-            return;
-        }
-    }
-    // Common suffix for non-CDR2 variants
-    output.push_str("                hash ^= b as u64;\n");
-    output.push_str("                hash = hash.wrapping_mul(PRIME);\n");
-    output.push_str("            }\n\n");
-}
+use crate::types::{IdlType, PrimitiveType};
 
 impl RustGenerator {
     /// Generate DDS trait implementation for a struct
@@ -245,7 +131,7 @@ impl RustGenerator {
         output.push_str("            &DESC\n");
         output.push_str("        }\n\n");
 
-        // encode() — dispatches per OMG DDS-XTypes v1.3 §7.4 to the XCDR1 or XCDR2
+        // encode() - dispatches per OMG DDS-XTypes v1.3 Sec.7.4 to the XCDR1 or XCDR2
         // inherent method emitted by the dual-emission codegen.
         output.push_str(
             "        fn encode(&self, buf: &mut [u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<usize> {\n",
@@ -260,7 +146,7 @@ impl RustGenerator {
         output.push_str("            }\n");
         output.push_str("        }\n\n");
 
-        // decode() — symmetric dispatch for XCDR1/XCDR2 per OMG DDS-XTypes v1.3 §7.4.
+        // decode() - symmetric dispatch for XCDR1/XCDR2 per OMG DDS-XTypes v1.3 Sec.7.4.
         output.push_str(
             "        fn decode(buf: &[u8], version: ::hdds::CdrVersion) -> ::hdds::api::Result<Self> {\n",
         );
@@ -274,108 +160,39 @@ impl RustGenerator {
         output.push_str("            }\n");
         output.push_str("        }\n\n");
 
-        // get_type_object() (XTypes)
-        output.push_str(&Self::emit_xtypes_type_object(s, &fqn, &field_layouts));
-
-        // compute_key() for @key fields
-        output.push_str(&Self::emit_compute_key_method(s));
-
-        // has_key() constant
-        output.push_str(&Self::emit_has_key_method(s));
-
-        output.push_str("    }\n    \n");
-        output
-    }
-
-    /// Generate `XTypes` `CompleteTypeObject`
-    ///
-    /// For `@mutable`/`@appendable` structs we must:
-    /// - set `StructTypeFlag::IS_MUTABLE` / `IS_APPENDABLE`
-    /// - use hash-based `MemberId` consistent with `PL_CDR2` encoding
-    fn emit_xtypes_type_object(
-        s: &Struct,
-        fqn: &str,
-        field_layouts: &[(String, usize, IdlType)],
-    ) -> String {
-        let mut output = String::new();
-
-        output.push_str(
-            "        fn get_type_object() -> Option<::hdds::xtypes::CompleteTypeObject> {\n",
-        );
-        output.push_str("            Some(::hdds::xtypes::CompleteTypeObject::Struct(\n");
-        output.push_str("                ::hdds::xtypes::CompleteStructType {\n");
-        // Derive struct extensibility flags from IDL annotations
-        if helpers::is_mutable_struct(s) {
-            output.push_str(
-                "                    struct_flags: ::hdds::xtypes::StructTypeFlag::IS_MUTABLE,\n",
-            );
-        } else {
-            output.push_str(
-                "                    struct_flags: ::hdds::xtypes::StructTypeFlag::IS_FINAL,\n",
-            );
-        }
-        output.push_str("                    header: ::hdds::xtypes::CompleteStructHeader {\n");
-        output.push_str("                        base_type: None,\n");
+        // get_type_object() / nested_type_objects() (XTypes 1.3 7.3.4), from
+        // the hidden per-type functions of `type_object.rs`.
+        let _ = &fqn;
+        let _ = &field_layouts;
         push_fmt(
             &mut output,
             format_args!(
-                "                        detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n",
-                fqn
+                "        fn get_type_object() -> Option<::hdds::xtypes::CompleteTypeObject> {{\n            Some(__hdds_type_object_{name}())\n        }}\n\n",
+                name = s.name
             ),
         );
-        output.push_str("                    },\n");
-        output.push_str("                    member_seq: vec![\n");
+        let nested = super::key_hash::with_index(|idx| {
+            let own = idx
+                .global_of_struct(s)
+                .map_or_else(|| s.name.clone(), |g| format!("::{g}"));
+            super::type_object::nested_objects(idx, &own)
+        });
+        push_fmt(
+            &mut output,
+            format_args!(
+                "        fn nested_type_objects() -> Vec<::hdds::xtypes::CompleteTypeObject> {{\n            {nested}\n        }}\n\n"
+            ),
+        );
+        // The codec aligns every 8-byte member at 8 under XCDR1.
+        output.push_str(
+            "        fn encodes_xcdr1_natively() -> bool {\n            true\n        }\n\n",
+        );
 
-        // Generate CompleteStructMember for each field
-        for (idx, (field_name, _offset, field_type)) in field_layouts.iter().enumerate() {
-            // For mutable structs, use hash-based MemberId to match PL_CDR2 EMHEADER encoding.
-            // For final/appendable, use sequential MemberId per spec.
-            let member_id_val = if helpers::is_mutable_struct(s) {
-                let field = &s.fields[idx];
-                Self::compute_member_id(s, idx, field)
-            } else {
-                // @audit-ok: safe cast - struct field index always << u32::MAX
-                #[allow(clippy::cast_possible_truncation)]
-                {
-                    idx as u32
-                }
-            };
+        // has_key(), write_key_holder() and encode_key() for keyed types
+        // (instance KeyHash, RTPS 2.5 9.6.4.8).
+        output.push_str(&super::key_hash::emit_dds_key_methods(s));
 
-            let type_id_code = Self::emit_member_type_id(field_type);
-            output.push_str("                        ::hdds::xtypes::CompleteStructMember {\n");
-            output.push_str(
-                "                            common: ::hdds::xtypes::CommonStructMember {\n",
-            );
-            push_fmt(
-                &mut output,
-                format_args!(
-                    "                                member_id: {},\n",
-                    member_id_val
-                ),
-            );
-            output.push_str("                                member_flags: ::hdds::xtypes::MemberFlag::empty(),\n");
-            push_fmt(
-                &mut output,
-                format_args!(
-                    "                                member_type_id: {},\n",
-                    type_id_code
-                ),
-            );
-            output.push_str("                            },\n");
-            push_fmt(
-                &mut output,
-                format_args!(
-                    "                            detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n",
-                    field_name
-                ),
-            );
-            output.push_str("                        },\n");
-        }
-
-        output.push_str("                    ],\n");
-        output.push_str("                }\n");
-        output.push_str("            ))\n");
-        output.push_str("        }\n");
+        output.push_str("    }\n    \n");
         output
     }
 
@@ -429,6 +246,7 @@ impl RustGenerator {
     fn is_variable_size_type(ty: &IdlType) -> bool {
         match ty {
             IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
+            | IdlType::BoundedString { .. }
             | IdlType::Sequence { .. }
             | IdlType::Map { .. } => true,
             IdlType::Array { inner, .. } => Self::is_variable_size_type(inner),
@@ -462,16 +280,8 @@ impl RustGenerator {
                 PrimitiveType::String | PrimitiveType::WString => (24, 8, "String"),
                 PrimitiveType::Fixed { .. } => (16, 8, "I64"),
             },
-            IdlType::Sequence { inner, .. } => {
-                // Bounded string (string<N>) has same layout as String
-                if matches!(
-                    **inner,
-                    IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
-                ) {
-                    return (24, 8, "String");
-                }
-                (24, 8, "U64") // Vec<T> = ptr + len + cap
-            }
+            IdlType::BoundedString { .. } => (24, 8, "String"),
+            IdlType::Sequence { .. } => (24, 8, "U64"), // Vec<T> = ptr + len + cap
             IdlType::Array { inner, size } => {
                 let (inner_size, inner_align, inner_kind) = Self::field_type_info(inner);
                 (inner_size * (*size as usize), inner_align, inner_kind)
@@ -479,284 +289,5 @@ impl RustGenerator {
             IdlType::Map { .. } => (48, 8, "U64"), // HashMap layout
             IdlType::Named(_) => (4, 4, "U32"),    // Enums are u32; nested structs vary
         }
-    }
-
-    /// Generate complete `TypeIdentifier` expression for a field type.
-    ///
-    /// For primitive types, returns `::hdds::xtypes::TypeIdentifier::TK_*`.
-    /// For named types (structs/enums), emits a `TypeIdentifier::Complete(hash)`
-    /// where the hash is computed at runtime from the nested `CompleteTypeObject`
-    /// and memoized via a block-scoped `OnceLock`. Per OMG DDS-XTypes v1.3
-    /// §7.3.4.4, only `EK_MINIMAL`/`EK_COMPLETE` hash references and the
-    /// `TI_*` plain-collection variants are spec-valid wire encodings for
-    /// nested types — embedding a full `CompleteTypeObject` inline (the
-    /// previous `TypeIdentifier::Inline(Box::new(...))` HDDS extension)
-    /// has no spec-compliant counterpart.
-    fn emit_member_type_id(idl_type: &IdlType) -> String {
-        use crate::types::PrimitiveType;
-
-        match idl_type {
-            IdlType::Primitive(prim) => {
-                let suffix = match prim {
-                    PrimitiveType::Octet | PrimitiveType::UInt8 | PrimitiveType::Void => "TK_BYTE",
-                    PrimitiveType::Char => "TK_CHAR8",
-                    PrimitiveType::WChar => "TK_CHAR16",
-                    PrimitiveType::Boolean => "TK_BOOLEAN",
-                    PrimitiveType::Short | PrimitiveType::Int16 => "TK_INT16",
-                    PrimitiveType::UnsignedShort | PrimitiveType::UInt16 => "TK_UINT16",
-                    PrimitiveType::Long | PrimitiveType::Int32 => "TK_INT32",
-                    PrimitiveType::UnsignedLong | PrimitiveType::UInt32 => "TK_UINT32",
-                    PrimitiveType::LongLong
-                    | PrimitiveType::Int64
-                    | PrimitiveType::Fixed { .. } => "TK_INT64",
-                    PrimitiveType::UnsignedLongLong | PrimitiveType::UInt64 => "TK_UINT64",
-                    PrimitiveType::Float => "TK_FLOAT32",
-                    PrimitiveType::Double | PrimitiveType::LongDouble => "TK_FLOAT64",
-                    PrimitiveType::Int8 => "TK_INT8",
-                    PrimitiveType::String => "TK_STRING8",
-                    PrimitiveType::WString => "TK_STRING16",
-                };
-                format!("::hdds::xtypes::TypeIdentifier::{}", suffix)
-            }
-            IdlType::Sequence { inner, .. } => {
-                if matches!(
-                    **inner,
-                    IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
-                ) {
-                    return "::hdds::xtypes::TypeIdentifier::TK_STRING8".to_string();
-                }
-                "::hdds::xtypes::TypeIdentifier::TK_UINT32".to_string()
-            }
-            IdlType::Array { inner, .. } => Self::emit_member_type_id(inner),
-            IdlType::Map { .. } => "::hdds::xtypes::TypeIdentifier::TK_UINT32".to_string(),
-            IdlType::Named(name) => Self::emit_inline_type_object(name),
-        }
-    }
-
-    /// Generate a `TypeIdentifier::Complete(hash)` expression for a named type.
-    ///
-    /// Looks up the type definition in the thread-local type index, builds the
-    /// nested `CompleteTypeObject` inline, and computes its `EquivalenceHash`
-    /// at runtime, memoized through a block-scoped `OnceLock` so the hash is
-    /// computed exactly once per process per call site (D2 strategy validated
-    /// in Chantier 1.5 Phase 0 ADR §3.1). Falls back to `TK_UINT32` if the
-    /// type is not found (e.g., typedefs) or if a recursion cycle is detected.
-    ///
-    /// Output shape:
-    ///
-    /// ```text
-    /// {
-    ///     static __HASH: ::std::sync::OnceLock<::hdds::xtypes::EquivalenceHash> =
-    ///         ::std::sync::OnceLock::new();
-    ///     ::hdds::xtypes::TypeIdentifier::Complete(*__HASH.get_or_init(|| {
-    ///         let __nested_to = ::hdds::xtypes::CompleteTypeObject::Struct(...);
-    ///         __nested_to
-    ///             .compute_equivalence_hash()
-    ///             .expect("CDR2 encoding of nested CompleteTypeObject")
-    ///     }))
-    /// }
-    /// ```
-    ///
-    /// The block introduces a unique `static OnceLock` per call site (Rust
-    /// scopes statics to their enclosing block), so the same nested type
-    /// referenced from multiple parent fields keeps separate caches — this
-    /// is acceptable: the computed hash is identical, just redundantly
-    /// memoized once per occurrence.
-    fn emit_inline_type_object(name: &str) -> String {
-        // Cycle detection: if we are already emitting this type (recursive struct),
-        // return a placeholder to break infinite codegen recursion. Self-
-        // referential IDL structs would otherwise expand indefinitely. Spec-
-        // compliant handling is `TI_STRONGLY_CONNECTED_COMPONENT` (Chantier 1.6).
-        let is_cycle = EMITTING_TYPES.with(|set| set.borrow().contains(name));
-        if is_cycle {
-            return "::hdds::xtypes::TypeIdentifier::TK_UINT32".to_string();
-        }
-
-        let Some((type_def, module)) = helpers::lookup_type_def(name) else {
-            // Unknown type (typedef, etc.) - fall back to u32 placeholder
-            return "::hdds::xtypes::TypeIdentifier::TK_UINT32".to_string();
-        };
-
-        let fqn = module
-            .as_ref()
-            .map_or_else(|| name.to_string(), |m| format!("{}::{}", m, name));
-
-        EMITTING_TYPES.with(|set| set.borrow_mut().insert(name.to_string()));
-
-        let nested_type_object = match type_def {
-            helpers::TypeDef::Struct(s) => Self::emit_complete_struct_type_object(&s, &fqn),
-            helpers::TypeDef::Enum(e) => Self::emit_complete_enum_type_object(&e, &fqn),
-        };
-
-        EMITTING_TYPES.with(|set| set.borrow_mut().remove(name));
-
-        let mut out = String::new();
-        out.push_str("{\n");
-        out.push_str("                                        static __HASH: ::std::sync::OnceLock<::hdds::xtypes::EquivalenceHash> = ::std::sync::OnceLock::new();\n");
-        out.push_str("                                        ::hdds::xtypes::TypeIdentifier::Complete(*__HASH.get_or_init(|| {\n");
-        out.push_str("                                            let __nested_to = ");
-        out.push_str(&nested_type_object);
-        out.push_str(";\n");
-        out.push_str("                                            __nested_to.compute_equivalence_hash().expect(\"CDR2 encoding of nested CompleteTypeObject\")\n");
-        out.push_str("                                        }))\n");
-        out.push_str("                                    }");
-        out
-    }
-
-    /// Generate the `::hdds::xtypes::CompleteTypeObject::Struct(...)` expression
-    /// for a named struct. The result is plugged into the `OnceLock` block
-    /// emitted by `emit_inline_type_object`.
-    fn emit_complete_struct_type_object(s: &Struct, fqn: &str) -> String {
-        let mut out = String::new();
-        out.push_str("::hdds::xtypes::CompleteTypeObject::Struct(\n");
-        out.push_str(
-            "                                                ::hdds::xtypes::CompleteStructType {\n",
-        );
-        out.push_str("                                                    struct_flags: ::hdds::xtypes::StructTypeFlag::IS_FINAL,\n");
-        out.push_str("                                                    header: ::hdds::xtypes::CompleteStructHeader {\n");
-        out.push_str("                                                        base_type: None,\n");
-        push_fmt(&mut out, format_args!(
-            "                                                        detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
-        ));
-        out.push_str("                                                    },\n");
-        out.push_str("                                                    member_seq: vec![\n");
-
-        for (idx, field) in s.fields.iter().enumerate() {
-            let inner_type_id = Self::emit_member_type_id(&field.field_type);
-            out.push_str("                                                        ::hdds::xtypes::CompleteStructMember {\n");
-            out.push_str("                                                            common: ::hdds::xtypes::CommonStructMember {\n");
-            push_fmt(
-                &mut out,
-                format_args!(
-                    "                                                                member_id: {},\n",
-                    idx
-                ),
-            );
-            out.push_str("                                                                member_flags: ::hdds::xtypes::MemberFlag::empty(),\n");
-            push_fmt(
-                &mut out,
-                format_args!(
-                    "                                                                member_type_id: {},\n",
-                    inner_type_id
-                ),
-            );
-            out.push_str("                                                            },\n");
-            push_fmt(&mut out, format_args!(
-                "                                                            detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", field.name
-            ));
-            out.push_str("                                                        },\n");
-        }
-
-        out.push_str("                                                    ],\n");
-        out.push_str("                                                }\n");
-        out.push_str("                                            )");
-        out
-    }
-
-    /// Generate the `::hdds::xtypes::CompleteTypeObject::Enumerated(...)`
-    /// expression for a named enum. Plugged into the `OnceLock` block emitted
-    /// by `emit_inline_type_object` (see that function's docstring).
-    fn emit_complete_enum_type_object(e: &crate::ast::Enum, fqn: &str) -> String {
-        let mut out = String::new();
-        out.push_str("::hdds::xtypes::CompleteTypeObject::Enumerated(\n");
-        out.push_str(
-            "                                                ::hdds::xtypes::CompleteEnumeratedType {\n",
-        );
-        out.push_str("                                                    header: ::hdds::xtypes::CompleteEnumeratedHeader {\n");
-        out.push_str("                                                        bit_bound: 32,\n");
-        push_fmt(&mut out, format_args!(
-            "                                                        detail: ::hdds::xtypes::CompleteTypeDetail::new(\"{}\"),\n", fqn
-        ));
-        out.push_str("                                                    },\n");
-        out.push_str("                                                    literal_seq: vec![\n");
-
-        for (idx, variant) in e.variants.iter().enumerate() {
-            // @audit-ok: enum variant index always fits in i64
-            let value = variant
-                .value
-                .unwrap_or_else(|| i64::try_from(idx).unwrap_or(0));
-            out.push_str("                                                        ::hdds::xtypes::CompleteEnumeratedLiteral {\n");
-            out.push_str("                                                            common: ::hdds::xtypes::CommonEnumeratedLiteral {\n");
-            push_fmt(
-                &mut out,
-                format_args!(
-                    "                                                                value: {},\n",
-                    value
-                ),
-            );
-            out.push_str("                                                                flags: ::hdds::xtypes::EnumeratedLiteralFlag::empty(),\n");
-            out.push_str("                                                            },\n");
-            push_fmt(&mut out, format_args!(
-                "                                                            detail: ::hdds::xtypes::CompleteMemberDetail::new(\"{}\"),\n", variant.name
-            ));
-            out.push_str("                                                        },\n");
-        }
-
-        out.push_str("                                                    ],\n");
-        out.push_str("                                                }\n");
-        out.push_str("                                            )");
-        out
-    }
-
-    /// Generate `compute_key()` method for `@key` fields
-    ///
-    /// Returns a 16-byte key hash computed from `@key` fields using FNV-1a.
-    fn emit_compute_key_method(s: &Struct) -> String {
-        let mut output = String::new();
-
-        let key_fields: Vec<(&str, &IdlType)> = s
-            .fields
-            .iter()
-            .filter(|f| f.annotations.iter().any(|a| matches!(a, Annotation::Key)))
-            .map(|f| (f.name.as_str(), &f.field_type))
-            .collect();
-
-        output.push_str(
-            "\n        /// Compute instance key hash from @key fields (FNV-1a, 16 bytes)\n",
-        );
-        output.push_str("        fn compute_key(&self) -> [u8; 16] {\n");
-
-        if key_fields.is_empty() {
-            output.push_str("            // No @key fields - return zeroed hash\n");
-            output.push_str("            [0u8; 16]\n");
-        } else {
-            output.push_str("            // FNV-1a hash of @key fields\n");
-            output.push_str("            let mut hash: u64 = 14695981039346656037;\n");
-            output.push_str("            const PRIME: u64 = 1099511628211;\n\n");
-
-            for (field, field_type) in &key_fields {
-                let kind = classify_key_field(field_type);
-                emit_key_field_hash(&mut output, field, &kind);
-            }
-
-            output.push_str("            // Expand to 16 bytes\n");
-            output.push_str("            let mut key = [0u8; 16];\n");
-            output.push_str("            key[..8].copy_from_slice(&hash.to_le_bytes());\n");
-            output.push_str("            hash = hash.wrapping_mul(PRIME);\n");
-            output.push_str("            key[8..].copy_from_slice(&hash.to_le_bytes());\n");
-            output.push_str("            key\n");
-        }
-
-        output.push_str("        }\n");
-        output
-    }
-
-    /// Generate `has_key()` constant for checking `@key` field presence
-    fn emit_has_key_method(s: &Struct) -> String {
-        let has_key = s
-            .fields
-            .iter()
-            .any(|f| f.annotations.iter().any(|a| matches!(a, Annotation::Key)));
-
-        let mut output = String::new();
-        output.push_str("\n        /// Returns true if this type has @key fields\n");
-        push_fmt(
-            &mut output,
-            format_args!(
-                "        fn has_key() -> bool {{ {} }}\n",
-                if has_key { "true" } else { "false" }
-            ),
-        );
-        output
     }
 }

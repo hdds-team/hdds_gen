@@ -6,7 +6,7 @@
 //! Generates Rust struct definitions from IDL struct types.
 
 use super::super::keywords::rust_ident;
-use super::{push_fmt, CdrVersion, RustGenerator};
+use super::{push_fmt, RustGenerator};
 use crate::ast::{Field, Struct};
 use crate::types::{Annotation, IdlType, PrimitiveType};
 
@@ -15,7 +15,6 @@ impl RustGenerator {
         &self,
         s: &Struct,
         module_path: Option<&str>,
-        enum_names: &[&str],
     ) -> String {
         let mut output = String::new();
         let indent = self.indent();
@@ -28,10 +27,22 @@ impl RustGenerator {
         if !serde_rename.is_empty() {
             push_fmt(&mut output, format_args!("{indent}{serde_rename}"));
         }
+        // An `@external` member is a `Box<T>` by definition; for a string or
+        // a collection `T` clippy would rather have no box.
+        if s.fields.iter().any(Field::is_external) {
+            push_fmt(
+                &mut output,
+                format_args!("{indent}#[allow(clippy::box_collection)]\n"),
+            );
+        }
         let name = &s.name;
         push_fmt(&mut output, format_args!("{indent}pub struct {name} {{\n"));
 
-        if let Some(base) = &s.base_struct {
+        if let Some(base) = s
+            .base_struct
+            .as_deref()
+            .map(crate::codegen::rust_paths::path)
+        {
             push_fmt(&mut output, format_args!("{indent}    pub base: {base},\n"));
         }
 
@@ -67,37 +78,15 @@ impl RustGenerator {
         }
 
         push_fmt(&mut output, format_args!("{indent}}}\n\n"));
-        // Every struct emits inherent `encode_xcdrN_le` / `decode_xcdrN_le`
-        // methods plus a `Cdr2Encode` / `Cdr2Decode` trait delegator that
-        // routes to the primary version chosen by `@data_representation`:
-        //
-        // - `@final` / default (non-mutable non-compact): dual emission, one
-        //   call per version in `VERSIONS_TO_EMIT`; delegator targets
-        //   `primary_version` (XCDR1 / PLAIN_CDR -> Xcdr1, otherwise Xcdr2).
-        // - `@mutable` / compact-mutable (PL_CDR2 wire format): single Xcdr2
-        //   emission; PL_CDR v1 is not supported. `@data_representation(XCDR1)`
-        //   on a mutable type is rejected at parse time by the validator.
-        if super::helpers::is_mutable_struct(s) || super::helpers::is_compact_mutable_struct(s) {
-            output.push_str(&Self::emit_cdr2_encode_impl(
-                s,
-                enum_names,
-                CdrVersion::Xcdr2,
-            ));
-            output.push_str(&Self::emit_cdr2_decode_impl(
-                s,
-                enum_names,
-                CdrVersion::Xcdr2,
-            ));
-            output.push_str(&Self::emit_cdr_trait_delegator(&s.name, CdrVersion::Xcdr2));
-        } else {
-            let repr = super::helpers::data_representation_annotation(&s.annotations);
-            let primary = super::helpers::primary_version(repr.as_deref());
-            for &version in super::helpers::VERSIONS_TO_EMIT {
-                output.push_str(&Self::emit_cdr2_encode_impl(s, enum_names, version));
-                output.push_str(&Self::emit_cdr2_decode_impl(s, enum_names, version));
-            }
-            output.push_str(&Self::emit_cdr_trait_delegator(&s.name, primary));
-        }
+        // The XCDR1 / XCDR2 codec (`codec.rs`) and the `Cdr2Encode` /
+        // `Cdr2Decode` delegator, which routes to the version the
+        // `@data_representation` annotation selects (XCDR2 by default).
+        output.push_str(&super::key_hash::with_index(|idx| {
+            super::codec::emit_struct_codec(idx, s)
+        }));
+        let repr = super::helpers::data_representation_annotation(&s.annotations);
+        let primary = super::helpers::primary_version(repr.as_deref());
+        output.push_str(&Self::emit_cdr_trait_delegator(&s.name, primary));
         let is_nested = s
             .annotations
             .iter()
@@ -128,7 +117,7 @@ impl RustGenerator {
         );
         push_fmt(
             &mut output,
-            format_args!("        {builder_name}::default()\n    }}\n}}\n\n"),
+            format_args!("        <{builder_name} as Default>::default()\n    }}\n}}\n\n"),
         );
 
         // Builder struct with all Optional fields
@@ -140,6 +129,13 @@ impl RustGenerator {
             &mut output,
             format_args!("#[derive(Default)]\npub struct {builder_name} {{\n"),
         );
+        if let Some(base) = s
+            .base_struct
+            .as_deref()
+            .map(crate::codegen::rust_paths::path)
+        {
+            push_fmt(&mut output, format_args!("    base: Option<{base}>,\n"));
+        }
 
         for field in &s.fields {
             let field_type = Self::type_to_rust(&field.field_type);
@@ -154,6 +150,18 @@ impl RustGenerator {
 
         // Builder impl with setter methods
         push_fmt(&mut output, format_args!("impl {builder_name} {{\n"));
+        if let Some(base) = s
+            .base_struct
+            .as_deref()
+            .map(crate::codegen::rust_paths::path)
+        {
+            push_fmt(
+                &mut output,
+                format_args!(
+                    "    /// Set the base `{base}` part\n    #[must_use]\n    pub fn base(mut self, value: {base}) -> Self {{\n        self.base = Some(value);\n        self\n    }}\n\n"
+                ),
+            );
+        }
 
         for field in &s.fields {
             let field_name = rust_ident(&field.name);
@@ -188,6 +196,9 @@ impl RustGenerator {
         output.push_str("        Ok(");
         output.push_str(struct_name);
         output.push_str(" {\n");
+        if s.base_struct.is_some() {
+            output.push_str("            base: self.base.ok_or(\"base is required\")?,\n");
+        }
 
         for field in &s.fields {
             let field_name = rust_ident(&field.name);
@@ -206,16 +217,8 @@ impl RustGenerator {
     /// Get the parameter type and conversion expression for builder setter
     fn builder_param_type(ty: &IdlType) -> (String, String) {
         match ty {
-            IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString) => {
-                ("impl Into<String>".to_string(), "value.into()".to_string())
-            }
-            IdlType::Sequence { inner, .. }
-                if matches!(
-                    inner.as_ref(),
-                    IdlType::Primitive(PrimitiveType::Char | PrimitiveType::WChar)
-                ) =>
-            {
-                // Bounded string (string<N>)
+            IdlType::Primitive(PrimitiveType::String | PrimitiveType::WString)
+            | IdlType::BoundedString { .. } => {
                 ("impl Into<String>".to_string(), "value.into()".to_string())
             }
             _ => {
@@ -277,12 +280,24 @@ impl RustGenerator {
                         format!("\"{value}\".to_string()")
                     }
                 }
+                PrimitiveType::Char | PrimitiveType::WChar => crate::types::quote_idl_char(value),
                 PrimitiveType::Float => format!("{}f32", value.trim_end_matches('f')),
                 PrimitiveType::Double | PrimitiveType::LongDouble => {
                     format!("{}f64", value.trim_end_matches('d'))
                 }
                 _ => value.to_string(),
             },
+            // An enumerator, `@default(BLUE)`: a variant of the member's
+            // enum type (through its alias when the type is a typedef).
+            IdlType::Named(_)
+                if value
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == ':') =>
+            {
+                let variant = value.rsplit("::").next().unwrap_or(value);
+                format!("{}::{variant}", Self::type_to_rust(ty))
+            }
             _ => value.to_string(),
         }
     }
